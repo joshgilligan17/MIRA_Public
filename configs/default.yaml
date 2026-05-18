@@ -1,0 +1,27 @@
+model: "MiniMax-M2.7"
+base_url: "https://api.minimax.io/v1"
+max_steps: 15
+temperature: 0.0
+toolsets:
+  - structure
+  - analysis
+
+tools:
+  structure_io:
+    enabled: true
+    description: "Load and save protein structures in PDB/mmCIF format"
+  contacts:
+    enabled: true
+    description: "Analyze inter-chain and intra-chain contacts"
+  sasa:
+    enabled: true
+    description: "Compute solvent-accessible surface areas"
+  secondary_structure:
+    enabled: true
+    description: "Determine DSSP-based secondary structure"
+  interface:
+    enabled: true
+    description: "Analyze protein-protein interfaces"
+  alignment:
+    enabled: true
+    description: "Structure-based sequence alignments"

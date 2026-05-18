@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MIRA - Molecular Interaction Analysis</title>
+    <link rel="stylesheet" href="css/main.css">
+    <script src="https://3Dmol.org/build/3Dmol-min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+</head>
+<body>
+    <div id="app">
+        <header class="header">
+            <div class="header-title">
+                <h1>MIRA</h1>
+            </div>
+            <div class="header-controls">
+                <input type="text" id="pdb-id-input" placeholder="Enter PDB ID (e.g., 1ABC)" value="">
+                <button id="load-pdb-btn">Load</button>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <div class="chat-panel">
+                <div id="chat-messages" class="chat-messages"></div>
+                <div class="chat-input-container">
+                    <input type="text" id="chat-input" placeholder="Ask about the structure..." disabled>
+                    <button id="send-btn" disabled>Send</button>
+                </div>
+            </div>
+
+            <div class="viewer-panel">
+                <div id="viewer-container"></div>
+                <div id="info-panel" class="info-panel"></div>
+            </div>
+        </main>
+    </div>
+
+    <script src="js/viewer.js"></script>
+    <script src="js/chat.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

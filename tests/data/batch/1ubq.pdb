@@ -1,0 +1,15 @@
+HEADER    STRUCTURAL PROTEIN                        29-JAN-96   1UBQ
+TITLE     UBIQUITIN STRUCTURE
+ATOM      1  N   MET A   1      17.485  14.927  10.440  1.00  9.21           N
+ATOM      2  CA  MET A   1      18.211  14.667  11.682  1.00  8.65           C
+ATOM      3  C   MET A   1      19.705  14.942  11.549  1.00  8.59           C
+ATOM      4  O   MET A   1      20.219  15.990  11.940  1.00  8.99           O
+ATOM      5  CB  MET A   1      17.603  15.529  12.790  1.00  8.86           C
+ATOM      6  CG  MET A   1      16.121  15.368  13.035  1.00  9.03           C
+ATOM      7  SD  MET A   1      15.460  13.696  12.648  1.00 11.13           S
+ATOM      8  CE  MET A   1      15.889  13.630  10.909  1.00 10.17           C
+ATOM      9  N   GLY A  76      23.716  11.897  10.932  1.00 11.84           N
+ATOM     10  CA  GLY A  76      25.140  11.575  10.815  1.00 12.22           C
+ATOM     11  C   GLY A  76      25.919  12.804  10.399  1.00 12.53           C
+ATOM     12  O   GLY A  76      25.353  13.881  10.170  1.00 12.62           O
+END
