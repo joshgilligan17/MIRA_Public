@@ -277,6 +277,16 @@ def _valid_basic_auth(authorization: str) -> bool:
     )
 
 
-dist_dir = Path(__file__).resolve().parents[3] / "webapp" / "dist"
-if dist_dir.exists():
+dist_dir = Path(os.environ.get("MIRA_WEB_DIST", "")) if os.environ.get("MIRA_WEB_DIST") else None
+for candidate in [
+    dist_dir,
+    Path(__file__).resolve().parents[3] / "webapp" / "dist",
+    Path.cwd() / "webapp" / "dist",
+    Path("/app/webapp/dist"),
+]:
+    if candidate and candidate.exists():
+        dist_dir = candidate
+        break
+
+if dist_dir and dist_dir.exists():
     app.mount("/", StaticFiles(directory=dist_dir, html=True), name="mira-web")
