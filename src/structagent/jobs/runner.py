@@ -112,6 +112,7 @@ class JobRunner:
             structures_json = [
                 _serialize_profile_result(item, job_id) for item in _sort_by_ranking(profile_results, ranking)
             ]
+            self.store.set_status(job_id, "completed", "Job completed.")
             results = {
                 "job": self.store.get_record(job_id).to_dict(),
                 "summary": _summary(structures_json, ranking, record.config.rank_by),
@@ -147,7 +148,6 @@ class JobRunner:
                     "llm_synthesis_fallback",
                     f"Used deterministic report synthesis: {synthesis['error']}",
                 )
-            self.store.set_status(job_id, "completed", "Job completed.")
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
             self.store.set_status(job_id, "failed", f"Job failed: {message}", error=message)

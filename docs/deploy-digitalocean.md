@@ -66,6 +66,7 @@ Prepare storage:
 
 ```bash
 mkdir -p /opt/mira /data/mira/jobs
+chown -R 10001:10001 /data/mira/jobs
 ```
 
 ## 4. Deploy MIRA

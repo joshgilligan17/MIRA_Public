@@ -29,8 +29,11 @@ RUN python -m pip install --upgrade pip \
 
 COPY --from=web-build /app/webapp/dist ./webapp/dist
 
-RUN addgroup --system mira \
-    && adduser --system --ingroup mira mira \
+ARG MIRA_UID=10001
+ARG MIRA_GID=10001
+
+RUN addgroup --system --gid "${MIRA_GID}" mira \
+    && adduser --system --uid "${MIRA_UID}" --ingroup mira mira \
     && mkdir -p /data/mira/jobs \
     && chown -R mira:mira /data/mira /app
 
