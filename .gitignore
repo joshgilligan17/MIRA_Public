@@ -5,11 +5,15 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+node_modules/
+webapp/dist/
 *.egg
 *.whl
 .coverage
 htmlcov/
 .env
+.env.*
+!.env.example
 .venv/
 venv/
 ENV/
@@ -28,3 +32,4 @@ trajectories/
 *_renum.pdb
 *_cleaned.pdb
 interface_energies.png
+.mira/

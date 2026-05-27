@@ -23,6 +23,9 @@ Validated plan steps are executed through `ToolRegistry` in order. Adaptive repl
 ### Batch Analysis Mode
 Analyze local folders of `.pdb`, `.cif`, and `.mmcif` files with parallel execution and joint comparative synthesis. Folder runs pass `pdb_path` to tools by default, so offline tests and private structure filtering do not require RCSB downloads. RCSB access is still available when you provide PDB IDs explicitly.
 
+### Batch Dashboard
+A local FastAPI + React dashboard supports upload-based triage jobs, ranked result tables, residue-level evidence, 3D structure inspection, and markdown report export. It uses deterministic analysis profiles for demo-reliable offline runs over uploaded PDB/CIF/mmCIF files.
+
 ### Flexible Display Modes
 - **Verbose Mode** (default): Full step-by-step output showing all tool calls, arguments, and results
 - **Normal Mode**: Compact single-line display with phase indicator and tool byline
@@ -39,6 +42,7 @@ pip install -e .
 **Requirements:**
 - Python 3.11+
 - MINIMAX_API_KEY or OPENAI_API_KEY environment variable (or use `--api-key` flag)
+- Node.js 20+ for the optional dashboard frontend
 
 ## Usage
 
@@ -92,7 +96,35 @@ mira batch --folder ./structures --glob "*.cif" "Analyze all CIF files"
 | `std_bfactor` | B-factor variability | No |
 | `interface_energy` | PyRosetta interface energy | No |
 
-Web UI, `binder-design`, and `batch-analyze` are currently experimental/archive paths and are hidden from the primary CLI help. The supported baseline is `mira`, `mira chat`, and `mira batch`.
+Legacy web UI code, `binder-design`, and `batch-analyze` are currently experimental/archive paths and are hidden from the primary CLI help. The supported baseline is `mira`, `mira chat`, `mira batch`, and the local dashboard API below.
+
+### Local Dashboard
+
+```bash
+# Backend API
+pip install -e ".[web]"
+uvicorn structagent.api.server:app --reload --port 8000
+
+# Frontend
+cd webapp
+npm install
+npm run dev
+```
+
+Open `http://127.0.0.1:5173`. Uploaded jobs are stored under `.mira/jobs/`.
+
+The historical `src/structagent/web/` UI remains archived/experimental. The supported dashboard entrypoint is `structagent.api.server:app` plus `webapp/`.
+
+### DigitalOcean Deployment
+
+The supported hosted prototype path is a Dockerized FastAPI + React app on a DigitalOcean Droplet, with MiniMax synthesis for now and Cloudflare Workers AI planned as the next provider.
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+```
+
+See `docs/deploy-digitalocean.md` for the full Droplet setup, auth, DNS, and update flow.
 
 ### Display Modes
 
@@ -263,6 +295,11 @@ After ranking, MIRA's LLM generates a comparative analysis:
 ```bash
 export MINIMAX_API_KEY=your_key_here  # Default API
 export OPENAI_API_KEY=your_key_here  # Alternative
+export MIRA_JOB_ROOT=.mira/jobs
+export MIRA_REPORT_PROVIDER=minimax
+export MIRA_REPORT_API_KEY=your_key_here
+export MIRA_BASIC_AUTH_USERNAME=mira
+export MIRA_BASIC_AUTH_PASSWORD=use-a-long-random-password
 ```
 
 ### CLI Options
