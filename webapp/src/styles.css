@@ -328,6 +328,12 @@ textarea {
   color: #a33e35;
 }
 
+.status-pill-secondary {
+  padding-left: 8px;
+  border-left: 1px solid currentColor;
+  opacity: 0.78;
+}
+
 .notice {
   margin: 13px 0 0;
   padding: 10px 11px;

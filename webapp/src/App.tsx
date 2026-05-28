@@ -15,7 +15,9 @@ import {
 } from "lucide-react";
 import { ChangeEvent, CSSProperties, FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
-const API_BASE = import.meta.env.VITE_MIRA_API_BASE ?? "http://localhost:8000";
+const API_BASE =
+  import.meta.env.VITE_MIRA_API_BASE ??
+  (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" ? "http://localhost:8000" : "");
 
 declare global {
   interface Window {
@@ -81,6 +83,12 @@ type Results = {
   structures: StructureResult[];
 };
 
+type SynthesisStatus = {
+  configured: boolean;
+  provider?: string | null;
+  model?: string | null;
+};
+
 type FocusedRegion = {
   evidenceKey: string;
   chain?: string | null;
@@ -140,11 +148,23 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [apiOnline, setApiOnline] = useState<boolean | null>(null);
+  const [synthesisStatus, setSynthesisStatus] = useState<SynthesisStatus | null>(null);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/health`)
-      .then((response) => setApiOnline(response.ok))
-      .catch(() => setApiOnline(false));
+      .then(async (response) => {
+        setApiOnline(response.ok);
+        if (!response.ok) {
+          setSynthesisStatus(null);
+          return;
+        }
+        const data = await response.json();
+        setSynthesisStatus(data.synthesis ?? null);
+      })
+      .catch(() => {
+        setApiOnline(false);
+        setSynthesisStatus(null);
+      });
 
     fetch(`${API_BASE}/api/profiles`)
       .then((response) => response.json())
@@ -296,7 +316,7 @@ export default function App() {
       <header className="topbar">
         <LogoMark />
         <div className="topbar-actions">
-          <StatusPill online={apiOnline} />
+          <StatusPill online={apiOnline} synthesis={synthesisStatus} />
           <button className="icon-button" onClick={() => void refreshJob()} title="Refresh job">
             <RefreshCw size={18} />
           </button>
@@ -532,14 +552,31 @@ function LogoMark() {
   );
 }
 
-function StatusPill({ online }: { online: boolean | null }) {
-  const label = online === null ? "checking" : online ? "api online" : "api offline";
+function StatusPill({ online, synthesis }: { online: boolean | null; synthesis: SynthesisStatus | null }) {
+  const apiLabel = online === null ? "checking" : online ? "api online" : "api offline";
+  const synthesisLabel =
+    online && synthesis?.configured
+      ? `${providerLabel(synthesis.provider)} connected`
+      : online
+        ? "synthesis not configured"
+        : "";
   return (
     <span className={`status-pill ${online ? "ok" : online === false ? "bad" : ""}`}>
       <Server size={15} />
-      {label}
+      <span>{apiLabel}</span>
+      {synthesisLabel && <span className="status-pill-secondary">{synthesisLabel}</span>}
     </span>
   );
+}
+
+function providerLabel(provider?: string | null) {
+  if (!provider) {
+    return "LLM";
+  }
+  if (provider.toLowerCase() === "minimax") {
+    return "MiniMax";
+  }
+  return provider.charAt(0).toUpperCase() + provider.slice(1);
 }
 
 function RankingTable({

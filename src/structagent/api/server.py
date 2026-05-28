@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Str
 from fastapi.staticfiles import StaticFiles
 
 from structagent.jobs.models import JobConfig
-from structagent.jobs.runner import JobRunner
+from structagent.jobs.runner import PROVIDER_DEFAULTS, JobRunner
 from structagent.jobs.store import JobStore
 from structagent.profiles import list_analysis_profiles
 
@@ -63,8 +63,8 @@ async def optional_basic_auth(request: Request, call_next):
 
 
 @app.get("/api/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, object]:
+    return {"status": "ok", "synthesis": _synthesis_status()}
 
 
 @app.get("/api/profiles")
@@ -275,6 +275,29 @@ def _valid_basic_auth(authorization: str) -> bool:
     return secrets.compare_digest(username, BASIC_AUTH_USERNAME or "") and secrets.compare_digest(
         password, BASIC_AUTH_PASSWORD or ""
     )
+
+
+def _synthesis_status() -> dict[str, object]:
+    provider = (os.getenv("MIRA_REPORT_PROVIDER") or _infer_report_provider()).lower()
+    defaults = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["openai"])
+    model = os.getenv("MIRA_REPORT_MODEL") or defaults.get("model")
+    configured = bool(os.getenv("MIRA_REPORT_API_KEY") or _first_env_value(defaults.get("env_vars", ())))
+    return {"configured": configured, "provider": provider, "model": model}
+
+
+def _infer_report_provider() -> str:
+    for provider, defaults in PROVIDER_DEFAULTS.items():
+        if _first_env_value(defaults.get("env_vars", ())):
+            return provider
+    return "openai"
+
+
+def _first_env_value(env_vars: tuple[str, ...] | list[str]) -> str | None:
+    for env_var in env_vars:
+        value = os.getenv(env_var)
+        if value:
+            return value
+    return None
 
 
 dist_dir = Path(os.environ.get("MIRA_WEB_DIST", "")) if os.environ.get("MIRA_WEB_DIST") else None
