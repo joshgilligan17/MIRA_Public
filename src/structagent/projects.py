@@ -15,6 +15,28 @@ ChatRole = Literal["user", "assistant"]
 
 
 @dataclass
+class ProjectStructure:
+    """Persisted standalone structure in a project chat workspace."""
+
+    id: str
+    filename: str
+    original_name: str
+    uploaded_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ProjectStructure":
+        return cls(
+            id=data["id"],
+            filename=data["filename"],
+            original_name=data.get("original_name") or data["filename"],
+            uploaded_at=data["uploaded_at"],
+        )
+
+
+@dataclass
 class ChatMessage:
     """Persisted project chat message."""
 
@@ -52,6 +74,7 @@ class ProjectRecord:
     target_file: str | None = None
     target_original_name: str | None = None
     target_uploaded_at: str | None = None
+    structures: list[ProjectStructure] = field(default_factory=list)
     job_ids: list[str] = field(default_factory=list)
     chat_messages: list[ChatMessage] = field(default_factory=list)
     selected_job_id: str | None = None
@@ -67,6 +90,7 @@ class ProjectRecord:
             "target_file": self.target_file,
             "target_original_name": self.target_original_name,
             "target_uploaded_at": self.target_uploaded_at,
+            "structures": [structure.to_dict() for structure in self.structures],
             "job_ids": self.job_ids,
             "chat_messages": [message.to_dict() for message in self.chat_messages],
             "selected_job_id": self.selected_job_id,
@@ -84,6 +108,7 @@ class ProjectRecord:
             target_file=data.get("target_file"),
             target_original_name=data.get("target_original_name"),
             target_uploaded_at=data.get("target_uploaded_at"),
+            structures=[ProjectStructure.from_dict(item) for item in data.get("structures", [])],
             job_ids=data.get("job_ids") or [],
             chat_messages=[ChatMessage.from_dict(item) for item in data.get("chat_messages", [])],
             selected_job_id=data.get("selected_job_id"),
@@ -133,7 +158,7 @@ class ProjectStore:
     def update_project(self, project_id: str, **updates: Any) -> ProjectRecord:
         project = self.get_project(project_id)
         for key, value in updates.items():
-            if hasattr(project, key) and value is not None:
+            if hasattr(project, key):
                 setattr(project, key, value)
         self.write_project(project)
         return project
@@ -146,14 +171,45 @@ class ProjectStore:
         project.target_file = path.name
         project.target_original_name = safe_name
         project.target_uploaded_at = _now()
+        project.selected_job_id = None
+        project.selected_structure_id = "target"
         self.write_project(project)
         return project
+
+    def save_structure(self, project_id: str, filename: str, content: bytes) -> tuple[ProjectRecord, ProjectStructure]:
+        project = self.get_project(project_id)
+        structure_id = uuid4().hex[:12]
+        safe_name = Path(filename or "structure.pdb").name
+        stored_name = f"{structure_id}{Path(safe_name).suffix.lower() or '.pdb'}"
+        path = self.structure_dir(project_id) / stored_name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        structure = ProjectStructure(
+            id=structure_id,
+            filename=stored_name,
+            original_name=safe_name,
+            uploaded_at=_now(),
+        )
+        project.structures.append(structure)
+        project.selected_job_id = None
+        project.selected_structure_id = structure.id
+        self.write_project(project)
+        return project, structure
 
     def add_job(self, project_id: str, job_id: str) -> ProjectRecord:
         project = self.get_project(project_id)
         if job_id not in project.job_ids:
             project.job_ids.append(job_id)
         project.selected_job_id = job_id
+        self.write_project(project)
+        return project
+
+    def set_selection(
+        self, project_id: str, selected_job_id: str | None, selected_structure_id: str | None
+    ) -> ProjectRecord:
+        project = self.get_project(project_id)
+        project.selected_job_id = selected_job_id
+        project.selected_structure_id = selected_structure_id
         self.write_project(project)
         return project
 
@@ -175,8 +231,8 @@ class ProjectStore:
             selected_structure_id=selected_structure_id,
         )
         project.chat_messages.append(message)
-        project.selected_job_id = selected_job_id or project.selected_job_id
-        project.selected_structure_id = selected_structure_id or project.selected_structure_id
+        project.selected_job_id = selected_job_id
+        project.selected_structure_id = selected_structure_id
         self.write_project(project)
         return message
 
@@ -186,10 +242,19 @@ class ProjectStore:
     def target_dir(self, project_id: str) -> Path:
         return self.project_dir(project_id) / "target"
 
+    def structure_dir(self, project_id: str) -> Path:
+        return self.project_dir(project_id) / "structures"
+
     def target_path(self, project: ProjectRecord) -> Path | None:
         if not project.target_file:
             return None
         return self.target_dir(project.id) / project.target_file
+
+    def structure_path(self, project: ProjectRecord, structure_id: str) -> Path | None:
+        structure = next((item for item in project.structures if item.id == structure_id), None)
+        if not structure:
+            return None
+        return self.structure_dir(project.id) / structure.filename
 
     def metadata_path(self, project_id: str) -> Path:
         return self.project_dir(project_id) / "project.json"

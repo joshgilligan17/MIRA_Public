@@ -116,13 +116,8 @@ def get_project(project_id: str) -> dict[str, object]:
 @app.patch("/api/projects/{project_id}")
 def update_project(project_id: str, payload: ProjectUpdateRequest) -> dict[str, object]:
     _get_project_or_404(project_id)
-    project = PROJECTS.update_project(
-        project_id,
-        name=payload.name,
-        description=payload.description,
-        selected_job_id=payload.selected_job_id,
-        selected_structure_id=payload.selected_structure_id,
-    )
+    updates = {field: getattr(payload, field) for field in payload.model_fields_set}
+    project = PROJECTS.update_project(project_id, **updates)
     return {"project": _project_response(project)}
 
 
@@ -152,6 +147,35 @@ def get_project_target(project_id: str) -> FileResponse:
     if not path or not path.exists() or not _is_under(path, PROJECTS.target_dir(project_id)):
         raise HTTPException(status_code=404, detail="Target structure not found.")
     return FileResponse(path, media_type="chemical/x-pdb", filename=project.target_original_name or path.name)
+
+
+@app.post("/api/projects/{project_id}/structures")
+async def upload_project_structure(
+    project_id: str,
+    file: Annotated[UploadFile, File(description="Chat-visible PDB, CIF, or mmCIF structure")],
+) -> dict[str, object]:
+    _get_project_or_404(project_id)
+    filename = Path(file.filename or "structure.pdb").name
+    if Path(filename).suffix.lower() not in {".pdb", ".cif", ".mmcif"}:
+        raise HTTPException(status_code=400, detail="Upload a .pdb, .cif, or .mmcif structure.")
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"{filename} is larger than the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit.",
+        )
+    project, structure = PROJECTS.save_structure(project_id, filename, content)
+    return {"project": _project_response(project), "structure": _project_structure_response(project, structure)}
+
+
+@app.get("/api/projects/{project_id}/structures/{structure_id}")
+def get_project_structure(project_id: str, structure_id: str) -> FileResponse:
+    project = _get_project_or_404(project_id)
+    structure = next((item for item in project.structures if item.id == structure_id), None)
+    path = PROJECTS.structure_path(project, structure_id)
+    if not structure or not path or not path.exists() or not _is_under(path, PROJECTS.structure_dir(project_id)):
+        raise HTTPException(status_code=404, detail="Project structure not found.")
+    return FileResponse(path, media_type="chemical/x-pdb", filename=structure.original_name)
 
 
 @app.get("/api/projects/{project_id}/jobs")
@@ -220,6 +244,8 @@ def send_project_chat(project_id: str, payload: ProjectChatRequest) -> dict[str,
     if not message:
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
+    PROJECTS.set_selection(project_id, payload.selected_job_id, payload.selected_structure_id)
+    project = PROJECTS.get_project(project_id)
     PROJECTS.append_chat_message(project_id, "user", message, payload.selected_job_id, payload.selected_structure_id)
     project = PROJECTS.get_project(project_id)
     assistant_content = _generate_project_chat_response(
@@ -384,8 +410,33 @@ def get_report(job_id: str) -> PlainTextResponse:
 def _project_response(project: ProjectRecord) -> dict[str, object]:
     data = project.to_dict()
     data["target_structure"] = _target_structure_response(project)
+    data["structures"] = [_project_structure_response(project, structure) for structure in project.structures]
     data["job_count"] = len(project.job_ids)
     return data
+
+
+def _viewer_structure(
+    structure_id: str,
+    pdb_id: str,
+    filename: str,
+    profile: str,
+    summary: str,
+    structure_url: str,
+) -> dict[str, object]:
+    return {
+        "id": structure_id,
+        "pdb_id": pdb_id,
+        "filename": filename,
+        "success": True,
+        "error": None,
+        "profile": profile,
+        "chains": [],
+        "metrics": {},
+        "features": {},
+        "warnings": [],
+        "summary": summary,
+        "structure_url": structure_url,
+    }
 
 
 def _target_structure_response(project: ProjectRecord) -> dict[str, object] | None:
@@ -394,20 +445,26 @@ def _target_structure_response(project: ProjectRecord) -> dict[str, object] | No
         return None
     filename = project.target_original_name or path.name
     pdb_id = Path(filename).stem.upper() or "TARGET"
-    return {
-        "id": "target",
-        "pdb_id": pdb_id,
-        "filename": filename,
-        "success": True,
-        "error": None,
-        "profile": "project_target",
-        "chains": [],
-        "metrics": {},
-        "features": {},
-        "warnings": [],
-        "summary": "Project target structure.",
-        "structure_url": f"/api/projects/{project.id}/target",
-    }
+    return _viewer_structure(
+        structure_id="target",
+        pdb_id=pdb_id,
+        filename=filename,
+        profile="project_target",
+        summary="Project target structure.",
+        structure_url=f"/api/projects/{project.id}/target",
+    )
+
+
+def _project_structure_response(project: ProjectRecord, structure) -> dict[str, object]:
+    pdb_id = Path(structure.original_name).stem.upper() or structure.id.upper()
+    return _viewer_structure(
+        structure_id=structure.id,
+        pdb_id=pdb_id,
+        filename=structure.original_name,
+        profile="project_structure",
+        summary="Project chat structure.",
+        structure_url=f"/api/projects/{project.id}/structures/{structure.id}",
+    )
 
 
 def _get_project_or_404(project_id: str) -> ProjectRecord:
@@ -473,12 +530,13 @@ def _project_chat_context(
     selected_structure_id: str | None,
 ) -> dict[str, object]:
     target = _target_structure_response(project)
+    local_structure = _select_project_structure(project, selected_structure_id or project.selected_structure_id)
     job_id = selected_job_id or project.selected_job_id or (project.job_ids[-1] if project.job_ids else None)
     job = None
     results: dict[str, object] = {}
     report_excerpt = ""
-    selected_structure = None
-    if job_id:
+    selected_structure = local_structure
+    if not selected_structure and job_id:
         try:
             record = STORE.get_record(job_id)
             job = record.to_dict()
@@ -496,6 +554,7 @@ def _project_chat_context(
             "name": project.name,
             "description": project.description,
             "target": target,
+            "structures": [_project_structure_response(project, structure) for structure in project.structures],
             "job_count": len(project.job_ids),
         },
         "selected_job": job,
@@ -505,6 +564,17 @@ def _project_chat_context(
         "report_excerpt": report_excerpt,
         "recent_chat": [message.to_dict() for message in project.chat_messages[-8:]],
     }
+
+
+def _select_project_structure(project: ProjectRecord, selected_structure_id: str | None) -> dict[str, object] | None:
+    if not selected_structure_id:
+        return None
+    if selected_structure_id == "target":
+        return _target_structure_response(project)
+    structure = next((item for item in project.structures if item.id == selected_structure_id), None)
+    if structure:
+        return _project_structure_response(project, structure)
+    return None
 
 
 def _select_structure(results: dict[str, object], selected_structure_id: str | None) -> dict[str, object] | None:

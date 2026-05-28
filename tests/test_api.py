@@ -64,9 +64,28 @@ def test_project_crud_target_upload_and_project_job(tmp_path, monkeypatch):
 
     assert target.status_code == 200
     assert target.json()["project"]["target_structure"]["structure_url"] == f"/api/projects/{project_id}/target"
+    assert target.json()["project"]["selected_job_id"] is None
+    assert target.json()["project"]["selected_structure_id"] == "target"
     target_file = client.get(f"/api/projects/{project_id}/target")
     assert target_file.status_code == 200
     assert b"ATOM" in target_file.content
+
+    with open("tests/data/local/mini_complex.pdb", "rb") as handle:
+        chat_structure = client.post(
+            f"/api/projects/{project_id}/structures",
+            files={"file": ("chat_structure.pdb", handle, "chemical/x-pdb")},
+        )
+
+    assert chat_structure.status_code == 200
+    structure_id = chat_structure.json()["structure"]["id"]
+    assert (
+        chat_structure.json()["structure"]["structure_url"] == f"/api/projects/{project_id}/structures/{structure_id}"
+    )
+    assert chat_structure.json()["project"]["selected_job_id"] is None
+    assert chat_structure.json()["project"]["selected_structure_id"] == structure_id
+    structure_file = client.get(f"/api/projects/{project_id}/structures/{structure_id}")
+    assert structure_file.status_code == 200
+    assert b"ATOM" in structure_file.content
 
     with open("tests/data/local/mini_complex.pdb", "rb") as handle:
         job_response = client.post(
@@ -89,6 +108,14 @@ def test_project_crud_target_upload_and_project_job(tmp_path, monkeypatch):
     assert job["project_id"] == project_id
     assert project_jobs[0]["id"] == job_id
     assert project["job_ids"] == [job_id]
+
+    cleared = client.patch(
+        f"/api/projects/{project_id}",
+        json={"selected_job_id": None, "selected_structure_id": structure_id},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["project"]["selected_job_id"] is None
+    assert cleared.json()["project"]["selected_structure_id"] == structure_id
 
 
 def test_project_chat_uses_mocked_synthesis_provider(tmp_path, monkeypatch):
@@ -149,3 +176,44 @@ def test_project_chat_uses_mocked_synthesis_provider(tmp_path, monkeypatch):
     assert [message["role"] for message in messages] == ["user", "assistant"]
     assert "mira://region/interface_residues" in messages[-1]["content"]
     assert "<think>" not in messages[-1]["content"]
+
+
+def test_project_chat_can_use_uploaded_structure_without_batch(tmp_path, monkeypatch):
+    class FakeProvider:
+        def chat(self, messages, model, **kwargs):
+            prompt = messages[-1]["content"]
+            assert model == "fake-model"
+            assert '"selected_job": null' in prompt
+            assert '"pdb_id": "CHAT_STRUCTURE"' in prompt
+            return ProviderResponse(
+                content="I am looking at `CHAT_STRUCTURE` in the structure panel.",
+                input_tokens=12,
+                output_tokens=18,
+            )
+
+    def fake_create_provider(provider_name, api_key, base_url=None, timeout=120.0, temperature=0.0):
+        return FakeProvider()
+
+    projects = ProjectStore(tmp_path / "projects")
+    monkeypatch.setattr(server, "PROJECTS", projects)
+    monkeypatch.setattr(server, "create_provider", fake_create_provider)
+    monkeypatch.setenv("MIRA_REPORT_PROVIDER", "openai")
+    monkeypatch.setenv("MIRA_REPORT_MODEL", "fake-model")
+    monkeypatch.setenv("MIRA_REPORT_API_KEY", "test-key")
+    client = TestClient(server.app)
+
+    project_id = client.post("/api/projects", json={"name": "Standalone chat"}).json()["project"]["id"]
+    with open("tests/data/local/mini_complex.pdb", "rb") as handle:
+        upload = client.post(
+            f"/api/projects/{project_id}/structures",
+            files={"file": ("chat_structure.pdb", handle, "chemical/x-pdb")},
+        )
+    structure_id = upload.json()["structure"]["id"]
+
+    chat = client.post(
+        f"/api/projects/{project_id}/chat",
+        json={"message": "What is this?", "selected_job_id": None, "selected_structure_id": structure_id},
+    )
+
+    assert chat.status_code == 200
+    assert chat.json()["messages"][-1]["content"] == "I am looking at `CHAT_STRUCTURE` in the structure panel."

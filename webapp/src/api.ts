@@ -97,6 +97,7 @@ export type Project = {
   target_original_name?: string | null;
   target_uploaded_at?: string | null;
   target_structure?: StructureResult | null;
+  structures?: StructureResult[];
   job_ids: string[];
   job_count: number;
   chat_messages: ChatMessage[];
@@ -188,6 +189,18 @@ export async function uploadProjectTarget(projectId: string, file: File): Promis
     body: formData,
   });
   return data.project;
+}
+
+export async function uploadProjectStructure(
+  projectId: string,
+  file: File,
+): Promise<{ project: Project; structure: StructureResult }> {
+  const formData = new FormData();
+  formData.append("file", file);
+  return apiJson(`/api/projects/${projectId}/structures`, {
+    method: "POST",
+    body: formData,
+  });
 }
 
 export async function listProjectJobs(projectId: string): Promise<Job[]> {

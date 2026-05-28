@@ -479,7 +479,17 @@ textarea {
 }
 
 .chat-toolbar {
-  justify-content: space-between;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.structure-select-label {
+  flex: 1 1 240px;
+  max-width: 420px;
+}
+
+.structure-select-label select {
+  min-height: 38px;
 }
 
 .chat-messages {

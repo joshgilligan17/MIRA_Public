@@ -49,6 +49,7 @@ import {
   rankOptions,
   sendProjectChat,
   updateProject,
+  uploadProjectStructure,
   uploadProjectTarget,
 } from "./api";
 import {
@@ -273,6 +274,7 @@ function ProjectsPage({
 function ChatPage({ refreshProjects }: { refreshProjects: () => Promise<void> }) {
   const { projectId = "" } = useParams();
   const targetInputRef = useRef<HTMLInputElement>(null);
+  const structureInputRef = useRef<HTMLInputElement>(null);
   const [project, setProject] = useState<Project | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [selectedStructure, setSelectedStructure] = useState<StructureResult | null>(null);
@@ -281,6 +283,7 @@ function ChatPage({ refreshProjects }: { refreshProjects: () => Promise<void> })
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [uploadingTarget, setUploadingTarget] = useState(false);
+  const [uploadingStructure, setUploadingStructure] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [activeEvidence, setActiveEvidence] = useState("interface_residues");
   const [focusedRegion, setFocusedRegion] = useState<FocusedRegion | null>(null);
@@ -327,6 +330,51 @@ function ChatPage({ refreshProjects }: { refreshProjects: () => Promise<void> })
     }
   }
 
+  async function onStructureChanged(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file || !projectId) {
+      return;
+    }
+    setUploadingStructure(true);
+    setNotice(null);
+    try {
+      const response = await uploadProjectStructure(projectId, file);
+      setProject(response.project);
+      setSelectedStructure(response.structure);
+      setReportMarkdown("");
+      setFocusedRegion(null);
+      await refreshProjects();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Structure upload failed.");
+    } finally {
+      setUploadingStructure(false);
+      event.target.value = "";
+    }
+  }
+
+  async function onSelectChatStructure(value: string) {
+    if (!project) {
+      return;
+    }
+    const structure = findProjectStructure(project, value);
+    if (!structure) {
+      return;
+    }
+    setSelectedStructure(structure);
+    setReportMarkdown("");
+    setFocusedRegion(null);
+    try {
+      const nextProject = await updateProject(project.id, {
+        selected_job_id: null,
+        selected_structure_id: structure.id,
+      });
+      setProject(nextProject);
+      await refreshProjects();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Structure selection failed.");
+    }
+  }
+
   async function onSend(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!prompt.trim() || !project) {
@@ -354,6 +402,8 @@ function ChatPage({ refreshProjects }: { refreshProjects: () => Promise<void> })
   }
 
   const inspectorStructure = selectedStructure ?? project?.target_structure ?? null;
+  const chatStructures = projectStructures(project);
+  const selectedStructureValue = inspectorStructure?.id ?? "";
 
   return (
     <div className="project-layout">
@@ -371,10 +421,41 @@ function ChatPage({ refreshProjects }: { refreshProjects: () => Promise<void> })
           }
         />
         <div className="chat-toolbar">
-          <input ref={targetInputRef} className="file-input" type="file" accept=".pdb,.cif,.mmcif" onChange={onTargetChanged} />
+          <input
+            ref={targetInputRef}
+            className="file-input"
+            type="file"
+            accept=".pdb,.cif,.mmcif"
+            onChange={onTargetChanged}
+          />
+          <input
+            ref={structureInputRef}
+            className="file-input"
+            type="file"
+            accept=".pdb,.cif,.mmcif"
+            onChange={onStructureChanged}
+          />
+          <label className="structure-select-label">
+            Structure
+            <select value={selectedStructureValue} onChange={(event) => void onSelectChatStructure(event.target.value)}>
+              {!chatStructures.length && <option value="">No structure selected</option>}
+              {chatStructures.map((structure) => (
+                <option key={structure.id} value={structure.id}>
+                  {structure.id === "target" ? `Target: ${structure.pdb_id}` : structure.pdb_id}
+                </option>
+              ))}
+              {inspectorStructure && !chatStructures.some((structure) => structure.id === inspectorStructure.id) && (
+                <option value={inspectorStructure.id}>{inspectorStructure.pdb_id}</option>
+              )}
+            </select>
+          </label>
           <button className="secondary-button" type="button" onClick={() => targetInputRef.current?.click()}>
             {uploadingTarget ? <Loader2 size={17} className="spin" /> : <Upload size={17} />}
             <span>{project?.target_original_name || "Upload target"}</span>
+          </button>
+          <button className="secondary-button" type="button" onClick={() => structureInputRef.current?.click()}>
+            {uploadingStructure ? <Loader2 size={17} className="spin" /> : <Upload size={17} />}
+            <span>Upload structure</span>
           </button>
           <button className="icon-button" type="button" onClick={() => void loadChatProject()} title="Refresh project">
             <RefreshCw size={18} />
@@ -868,8 +949,14 @@ async function loadSelectedProjectStructure(
   setSelectedStructure: (structure: StructureResult | null) => void,
   setReportMarkdown: (markdown: string) => void,
 ) {
+  const localStructure = findProjectStructure(project, project.selected_structure_id || "target");
+  if (localStructure && !project.selected_job_id) {
+    setSelectedStructure(localStructure);
+    setReportMarkdown("");
+    return;
+  }
   if (!project.selected_job_id) {
-    setSelectedStructure(project.target_structure ?? null);
+    setSelectedStructure(localStructure ?? projectStructures(project)[0] ?? null);
     setReportMarkdown("");
     return;
   }
@@ -879,11 +966,26 @@ async function loadSelectedProjectStructure(
       getReport(project.selected_job_id).catch(() => ""),
     ]);
     const selected =
+      localStructure ??
       results.structures.find((item) => item.id === project.selected_structure_id) ?? results.structures[0] ?? null;
     setSelectedStructure(selected ?? project.target_structure ?? null);
-    setReportMarkdown(report);
+    setReportMarkdown(localStructure ? "" : report);
   } catch {
-    setSelectedStructure(project.target_structure ?? null);
+    setSelectedStructure(localStructure ?? project.target_structure ?? null);
     setReportMarkdown("");
   }
+}
+
+function projectStructures(project: Project | null): StructureResult[] {
+  if (!project) {
+    return [];
+  }
+  return [project.target_structure, ...(project.structures ?? [])].filter(Boolean) as StructureResult[];
+}
+
+function findProjectStructure(project: Project, structureId?: string | null): StructureResult | null {
+  if (!structureId) {
+    return null;
+  }
+  return projectStructures(project).find((structure) => structure.id === structureId) ?? null;
 }
