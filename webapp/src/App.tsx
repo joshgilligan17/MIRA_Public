@@ -466,7 +466,7 @@ export default function App() {
               </div>
             )}
 
-            <button className="primary-button" type="submit" disabled={submitting || !apiOnline}>
+            <button className="primary-button" type="submit" disabled={submitting}>
               {submitting ? <Loader2 size={18} className="spin" /> : <Play size={18} />}
               <span>Run Batch</span>
             </button>
