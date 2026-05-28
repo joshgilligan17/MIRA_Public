@@ -65,8 +65,8 @@ systemctl enable --now docker
 Prepare storage:
 
 ```bash
-mkdir -p /opt/mira /data/mira/jobs
-chown -R 10001:10001 /data/mira/jobs
+mkdir -p /opt/mira /data/mira/jobs /data/mira/projects
+chown -R 10001:10001 /data/mira/jobs /data/mira/projects
 ```
 
 ## 4. Deploy MIRA
@@ -90,6 +90,7 @@ For the first MiniMax-backed deployment, set:
 ```bash
 MIRA_DOMAIN=:80
 MIRA_DATA_DIR=/data/mira/jobs
+MIRA_PROJECT_DIR=/data/mira/projects
 MIRA_BASIC_AUTH_USERNAME=mira
 MIRA_BASIC_AUTH_PASSWORD=use-a-long-random-password
 MIRA_REPORT_PROVIDER=minimax
@@ -143,7 +144,7 @@ docker image prune -f
 
 ## 7. Operational Notes
 
-- Uploaded jobs persist under `/data/mira/jobs`.
+- Uploaded jobs persist under `/data/mira/jobs`; project folders, chat history, and target structures persist under `/data/mira/projects`.
 - The default upload cap is `MIRA_MAX_UPLOAD_MB=250`.
 - Keep Basic Auth enabled until Cloudflare Access is in front of the app.
 - This deployment runs background jobs inside the web process, which is appropriate for class-project testing. A queue/worker split can come later.

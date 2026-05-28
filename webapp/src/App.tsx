@@ -1,133 +1,447 @@
 import {
   Activity,
   ArrowDownToLine,
-  CheckCircle2,
-  CircleAlert,
   FileArchive,
-  FileText,
+  Folder,
+  FolderPlus,
   Loader2,
+  MessageSquare,
   Microscope,
   Play,
   RefreshCw,
-  Server,
   SlidersHorizontal,
   Upload,
 } from "lucide-react";
-import { ChangeEvent, CSSProperties, FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
-
-const API_BASE =
-  import.meta.env.VITE_MIRA_API_BASE ??
-  (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" ? "http://localhost:8000" : "");
-
-declare global {
-  interface Window {
-    $3Dmol?: any;
-  }
-}
-
-type Profile = {
-  name: string;
-  label: string;
-  description: string;
-  default_rank_by: string;
-  tools: string[];
-};
-
-type Job = {
-  id: string;
-  status: "queued" | "running" | "completed" | "failed";
-  completed_count: number;
-  total_count: number;
-  failed_count: number;
-  error?: string | null;
-  config: {
-    query: string;
-    profile: string;
-    rank_by: string;
-  };
-};
-
-type RankingRow = {
-  rank: number;
-  pdb_id: string;
-  score: number;
-};
-
-type ResidueFeature = {
-  kind: string;
-  chain?: string | null;
-  residue_number?: number | string | null;
-  residue_name?: string | null;
-  label: string;
-  score?: number | null;
-};
-
-type StructureResult = {
-  id: string;
-  pdb_id: string;
-  filename: string;
-  success: boolean;
-  error?: string | null;
-  profile: string;
-  chains: { id: string; length?: number; first_residue?: number; last_residue?: number }[];
-  metrics: Record<string, number | string>;
-  features: Record<string, any[]>;
-  warnings: string[];
-  summary: string;
-  structure_url: string;
-};
-
-type Results = {
-  summary: Record<string, number | string | null>;
-  ranking: RankingRow[];
-  structures: StructureResult[];
-};
-
-type SynthesisStatus = {
-  configured: boolean;
-  provider?: string | null;
-  model?: string | null;
-};
-
-type FocusedRegion = {
-  evidenceKey: string;
-  chain?: string | null;
-  residueNumber?: number | string | null;
-};
-
-const rankOptions = [
-  { value: "stability", label: "Stability" },
-  { value: "buried_surface_area", label: "Buried surface" },
-  { value: "n_interface_residues", label: "Interface residues" },
-  { value: "mean_bfactor", label: "Mean B-factor" },
-  { value: "n_buried", label: "Buried count" },
-  { value: "n_exposed", label: "Exposed count" },
-  { value: "interface_energy", label: "Interface energy" },
-];
-
-const providerOptions = [
-  { value: "", label: "Auto", model: "", baseUrl: "" },
-  { value: "openai", label: "OpenAI", model: "gpt-4o-mini", baseUrl: "https://api.openai.com/v1" },
-  { value: "minimax", label: "MiniMax", model: "MiniMax-M2.7", baseUrl: "https://api.minimax.io/v1" },
-  { value: "anthropic", label: "Anthropic", model: "claude-3-5-haiku-20241022", baseUrl: "https://api.anthropic.com" },
-  { value: "azure", label: "Azure", model: "", baseUrl: "" },
-];
-
-const evidenceKinds = [
-  { key: "interface_residues", label: "Interface", color: "#1f6fbf" },
-  { key: "hotspots", label: "Hotspots", color: "#d24f45" },
-  { key: "buried_residues", label: "Buried", color: "#2f7d55" },
-  { key: "exposed_residues", label: "Exposed", color: "#be7a22" },
-  { key: "high_bfactor_residues", label: "Flexible", color: "#8b5cf6" },
-  { key: "charge_clusters", label: "Charge", color: "#0891b2" },
-  { key: "ramachandran_outliers", label: "Geometry", color: "#c026d3" },
-];
+import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  BrowserRouter,
+  Link,
+  Navigate,
+  NavLink,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useParams,
+} from "react-router-dom";
+import {
+  API_BASE,
+  ChatMessage,
+  FocusedRegion,
+  Job,
+  Profile,
+  Project,
+  Results,
+  StructureResult,
+  SynthesisStatus,
+  createProject,
+  createProjectJob,
+  getHealth,
+  getJob,
+  getProfiles,
+  getProject,
+  getProjectChat,
+  getReport,
+  getResults,
+  listProjectJobs,
+  listProjects,
+  providerOptions,
+  rankOptions,
+  sendProjectChat,
+  updateProject,
+  uploadProjectTarget,
+} from "./api";
+import {
+  EvidenceControls,
+  LogoMark,
+  MetricsGrid,
+  RankingTable,
+  RenderedMarkdown,
+  ReportPanel,
+  StatusPill,
+  StructureViewer,
+} from "./components";
 
 export default function App() {
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  return (
+    <BrowserRouter>
+      <MiraWorkspace />
+    </BrowserRouter>
+  );
+}
+
+function MiraWorkspace() {
+  const [projects, setProjects] = useState<Project[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [apiOnline, setApiOnline] = useState<boolean | null>(null);
+  const [synthesisStatus, setSynthesisStatus] = useState<SynthesisStatus | null>(null);
+
+  const refreshProjects = useCallback(async () => {
+    const nextProjects = await listProjects();
+    setProjects(nextProjects);
+  }, []);
+
+  useEffect(() => {
+    getHealth()
+      .then((health) => {
+        setApiOnline(true);
+        setSynthesisStatus(health.synthesis ?? null);
+      })
+      .catch(() => {
+        setApiOnline(false);
+        setSynthesisStatus(null);
+      });
+    getProfiles()
+      .then(setProfiles)
+      .catch(() => setProfiles([]));
+    refreshProjects().catch(() => setProjects([]));
+  }, [refreshProjects]);
+
+  return (
+    <div className="app-shell">
+      <Sidebar projects={projects} apiOnline={apiOnline} synthesisStatus={synthesisStatus} />
+      <main className="workspace-main">
+        <Routes>
+          <Route path="/" element={<Navigate to="/projects" replace />} />
+          <Route path="/projects" element={<ProjectsPage projects={projects} refreshProjects={refreshProjects} />} />
+          <Route path="/projects/:projectId" element={<ProjectIndex />} />
+          <Route
+            path="/projects/:projectId/chat"
+            element={<ChatPage refreshProjects={refreshProjects} />}
+          />
+          <Route
+            path="/projects/:projectId/batch"
+            element={<BatchPage profiles={profiles} refreshProjects={refreshProjects} />}
+          />
+          <Route
+            path="/projects/:projectId/jobs/:jobId"
+            element={<BatchPage profiles={profiles} refreshProjects={refreshProjects} />}
+          />
+          <Route path="*" element={<Navigate to="/projects" replace />} />
+        </Routes>
+      </main>
+    </div>
+  );
+}
+
+function Sidebar({
+  projects,
+  apiOnline,
+  synthesisStatus,
+}: {
+  projects: Project[];
+  apiOnline: boolean | null;
+  synthesisStatus: SynthesisStatus | null;
+}) {
+  const location = useLocation();
+  const activeProjectId = location.pathname.match(/\/projects\/([^/]+)/)?.[1] ?? null;
+  const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
+  const resultsHref = activeProject?.selected_job_id
+    ? `/projects/${activeProject.id}/jobs/${activeProject.selected_job_id}`
+    : activeProject
+      ? `/projects/${activeProject.id}/batch`
+      : "/projects";
+
+  return (
+    <aside className="sidebar">
+      <div className="sidebar-brand">
+        <LogoMark compact />
+      </div>
+      <StatusPill online={apiOnline} synthesis={synthesisStatus} />
+      <nav className="mode-nav">
+        <NavLink to="/projects" end className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}>
+          <Folder size={18} />
+          <span>Projects</span>
+        </NavLink>
+        {activeProject && (
+          <>
+            <NavLink
+              to={`/projects/${activeProject.id}/chat`}
+              className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
+            >
+              <MessageSquare size={18} />
+              <span>Chat</span>
+            </NavLink>
+            <NavLink
+              to={`/projects/${activeProject.id}/batch`}
+              className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
+            >
+              <FileArchive size={18} />
+              <span>Batch</span>
+            </NavLink>
+            <NavLink to={resultsHref} className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}>
+              <Activity size={18} />
+              <span>Results</span>
+            </NavLink>
+          </>
+        )}
+      </nav>
+      <div className="sidebar-section">
+        <div className="sidebar-section-title">Folders</div>
+        <div className="project-switcher">
+          {projects.slice(0, 8).map((project) => (
+            <Link
+              key={project.id}
+              to={`/projects/${project.id}/chat`}
+              className={project.id === activeProjectId ? "project-link active" : "project-link"}
+            >
+              <span>{project.name}</span>
+              <small>{project.job_count} batch runs</small>
+            </Link>
+          ))}
+          {!projects.length && <div className="sidebar-empty">No projects yet.</div>}
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function ProjectIndex() {
+  const { projectId } = useParams();
+  return <Navigate to={`/projects/${projectId}/chat`} replace />;
+}
+
+function ProjectsPage({
+  projects,
+  refreshProjects,
+}: {
+  projects: Project[];
+  refreshProjects: () => Promise<void>;
+}) {
+  const navigate = useNavigate();
+  const [name, setName] = useState("New MIRA project");
+  const [description, setDescription] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  async function onCreate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCreating(true);
+    setNotice(null);
+    try {
+      const project = await createProject(name, description);
+      await refreshProjects();
+      window.localStorage.setItem("mira:lastProjectId", project.id);
+      navigate(`/projects/${project.id}/chat`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Project creation failed.");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <div className="page-stack">
+      <header className="page-header">
+        <div>
+          <p className="eyebrow">MIRA workspace</p>
+          <h1>Projects</h1>
+        </div>
+        <form className="new-project-form" onSubmit={onCreate}>
+          <input value={name} onChange={(event) => setName(event.target.value)} />
+          <input
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            placeholder="Target, campaign, or design goal"
+          />
+          <button className="primary-button" type="submit" disabled={creating}>
+            {creating ? <Loader2 size={17} className="spin" /> : <FolderPlus size={17} />}
+            <span>Create</span>
+          </button>
+        </form>
+      </header>
+      {notice && <p className="notice">{notice}</p>}
+      <section className="project-grid">
+        {projects.map((project) => (
+          <Link className="project-card" to={`/projects/${project.id}/chat`} key={project.id}>
+            <div>
+              <h2>{project.name}</h2>
+              <p>{project.description || "Structure reasoning workspace"}</p>
+            </div>
+            <div className="project-card-meta">
+              <span>{project.target_original_name || "No target"}</span>
+              <span>{project.job_count} batch runs</span>
+            </div>
+          </Link>
+        ))}
+        {!projects.length && <div className="empty-state">Create a project to begin.</div>}
+      </section>
+    </div>
+  );
+}
+
+function ChatPage({ refreshProjects }: { refreshProjects: () => Promise<void> }) {
+  const { projectId = "" } = useParams();
+  const targetInputRef = useRef<HTMLInputElement>(null);
+  const [project, setProject] = useState<Project | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [selectedStructure, setSelectedStructure] = useState<StructureResult | null>(null);
+  const [reportMarkdown, setReportMarkdown] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [notice, setNotice] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [uploadingTarget, setUploadingTarget] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [activeEvidence, setActiveEvidence] = useState("interface_residues");
+  const [focusedRegion, setFocusedRegion] = useState<FocusedRegion | null>(null);
+
+  const loadChatProject = useCallback(async () => {
+    if (!projectId) {
+      return;
+    }
+    setLoading(true);
+    try {
+      const [nextProject, nextMessages] = await Promise.all([getProject(projectId), getProjectChat(projectId)]);
+      setProject(nextProject);
+      setMessages(nextMessages);
+      await loadSelectedProjectStructure(nextProject, setSelectedStructure, setReportMarkdown);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Project load failed.");
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    void loadChatProject();
+  }, [loadChatProject]);
+
+  async function onTargetChanged(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file || !projectId) {
+      return;
+    }
+    setUploadingTarget(true);
+    setNotice(null);
+    try {
+      const nextProject = await uploadProjectTarget(projectId, file);
+      setProject(nextProject);
+      setSelectedStructure(nextProject.target_structure ?? null);
+      setReportMarkdown("");
+      await refreshProjects();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Target upload failed.");
+    } finally {
+      setUploadingTarget(false);
+      event.target.value = "";
+    }
+  }
+
+  async function onSend(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!prompt.trim() || !project) {
+      return;
+    }
+    const message = prompt.trim();
+    setPrompt("");
+    setSubmitting(true);
+    setNotice(null);
+    try {
+      const nextMessages = await sendProjectChat(
+        project.id,
+        message,
+        project.selected_job_id,
+        selectedStructure?.id ?? project.selected_structure_id,
+      );
+      setMessages(nextMessages);
+      await refreshProjects();
+    } catch (error) {
+      setPrompt(message);
+      setNotice(error instanceof Error ? error.message : "Chat failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const inspectorStructure = selectedStructure ?? project?.target_structure ?? null;
+
+  return (
+    <div className="project-layout">
+      <section className="center-column chat-column">
+        <PageTitle
+          eyebrow={project?.name || "Project"}
+          title="Chat"
+          action={
+            project && (
+              <Link className="secondary-button" to={`/projects/${project.id}/batch`}>
+                <FileArchive size={17} />
+                <span>Analyze candidate binders</span>
+              </Link>
+            )
+          }
+        />
+        <div className="chat-toolbar">
+          <input ref={targetInputRef} className="file-input" type="file" accept=".pdb,.cif,.mmcif" onChange={onTargetChanged} />
+          <button className="secondary-button" type="button" onClick={() => targetInputRef.current?.click()}>
+            {uploadingTarget ? <Loader2 size={17} className="spin" /> : <Upload size={17} />}
+            <span>{project?.target_original_name || "Upload target"}</span>
+          </button>
+          <button className="icon-button" type="button" onClick={() => void loadChatProject()} title="Refresh project">
+            <RefreshCw size={18} />
+          </button>
+        </div>
+        {notice && <p className="notice">{notice}</p>}
+        <div className="chat-messages">
+          {messages.map((message) => (
+            <ChatBubble key={message.id} message={message} onRegionSelect={setFocusedRegion} />
+          ))}
+          {!messages.length && !loading && <div className="empty-state">No chat messages yet.</div>}
+          {loading && <div className="empty-state">Loading project.</div>}
+        </div>
+        <form className="composer" onSubmit={onSend}>
+          <textarea
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            rows={3}
+            placeholder="Ask about the target, selected candidate, report, or highlighted regions"
+          />
+          <button className="primary-button" type="submit" disabled={submitting || !prompt.trim()}>
+            {submitting ? <Loader2 size={18} className="spin" /> : <MessageSquare size={18} />}
+            <span>Send</span>
+          </button>
+        </form>
+      </section>
+      <StructureInspector
+        structure={inspectorStructure}
+        title={inspectorStructure?.pdb_id ?? "Structure"}
+        activeEvidence={activeEvidence}
+        focusedRegion={focusedRegion}
+        reportMarkdown={reportMarkdown}
+        reportHref={project?.selected_job_id ? `${API_BASE}/api/jobs/${project.selected_job_id}/report.md` : null}
+        onEvidenceChange={(key) => {
+          setActiveEvidence(key);
+          setFocusedRegion(null);
+        }}
+        onRegionSelect={(region) => {
+          setActiveEvidence(region.evidenceKey);
+          setFocusedRegion(region);
+        }}
+      />
+    </div>
+  );
+}
+
+function BatchPage({
+  profiles,
+  refreshProjects,
+}: {
+  profiles: Profile[];
+  refreshProjects: () => Promise<void>;
+}) {
+  const { projectId = "", jobId: routeJobId } = useParams();
+  const navigate = useNavigate();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [project, setProject] = useState<Project | null>(null);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(routeJobId ?? null);
+  const [job, setJob] = useState<Job | null>(null);
+  const [results, setResults] = useState<Results | null>(null);
+  const [reportMarkdown, setReportMarkdown] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [activeEvidence, setActiveEvidence] = useState("interface_residues");
+  const [focusedRegion, setFocusedRegion] = useState<FocusedRegion | null>(null);
   const [files, setFiles] = useState<File[]>([]);
-  const [query, setQuery] = useState("Rank these structures for de novo filtering.");
+  const [query, setQuery] = useState("Rank candidate binders for this project target.");
   const [profile, setProfile] = useState("triage_default");
   const [rankBy, setRankBy] = useState("stability");
   const [chainA, setChainA] = useState("");
@@ -138,160 +452,105 @@ export default function App() {
   const [llmModel, setLlmModel] = useState("");
   const [llmBaseUrl, setLlmBaseUrl] = useState("");
   const [llmApiKey, setLlmApiKey] = useState("");
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [job, setJob] = useState<Job | null>(null);
-  const [results, setResults] = useState<Results | null>(null);
-  const [reportMarkdown, setReportMarkdown] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [activeEvidence, setActiveEvidence] = useState("interface_residues");
-  const [focusedRegion, setFocusedRegion] = useState<FocusedRegion | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [apiOnline, setApiOnline] = useState<boolean | null>(null);
-  const [synthesisStatus, setSynthesisStatus] = useState<SynthesisStatus | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetch(`${API_BASE}/api/health`)
-      .then(async (response) => {
-        setApiOnline(response.ok);
-        if (!response.ok) {
-          setSynthesisStatus(null);
-          return;
-        }
-        const data = await response.json();
-        setSynthesisStatus(data.synthesis ?? null);
-      })
-      .catch(() => {
-        setApiOnline(false);
-        setSynthesisStatus(null);
-      });
+  const loadJobBundle = useCallback(
+    async (nextJobId: string, preferredStructureId?: string | null) => {
+      const status = await getJob(nextJobId);
+      setJob(status.job);
+      if (status.job.status === "completed") {
+        const nextResults = await getResults(nextJobId);
+        setResults(nextResults);
+        setSelectedId((current) => {
+          const candidate = preferredStructureId || current;
+          if (candidate && nextResults.structures.some((item) => item.id === candidate)) {
+            return candidate;
+          }
+          return nextResults.structures[0]?.id ?? null;
+        });
+        getReport(nextJobId)
+          .then(setReportMarkdown)
+          .catch(() => setReportMarkdown(""));
+      }
+    },
+    [],
+  );
 
-    fetch(`${API_BASE}/api/profiles`)
-      .then((response) => response.json())
-      .then((data) => setProfiles(data.profiles ?? []))
-      .catch(() => setProfiles([]));
-  }, []);
-
-  useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get("job");
-    if (id) {
-      setJobId(id);
-      void refreshJob(id);
+  const loadBatchProject = useCallback(async () => {
+    if (!projectId) {
+      return;
     }
-  }, []);
+    try {
+      const [nextProject, nextJobs] = await Promise.all([getProject(projectId), listProjectJobs(projectId)]);
+      setProject(nextProject);
+      setJobs(nextJobs);
+      const nextJobId = routeJobId || nextProject.selected_job_id || nextJobs[0]?.id || null;
+      setSelectedJobId(nextJobId);
+      if (nextJobId) {
+        await loadJobBundle(nextJobId, nextProject.selected_structure_id);
+      } else {
+        setJob(null);
+        setResults(null);
+        setReportMarkdown("");
+      }
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Batch workspace load failed.");
+    }
+  }, [loadJobBundle, projectId, routeJobId]);
 
   useEffect(() => {
-    if (!jobId || job?.status === "completed" || job?.status === "failed") {
+    void loadBatchProject();
+  }, [loadBatchProject]);
+
+  useEffect(() => {
+    if (!selectedJobId || job?.status === "completed" || job?.status === "failed") {
       return;
     }
     const timer = window.setInterval(() => {
-      void refreshJob(jobId);
-    }, 1000);
+      void loadJobBundle(selectedJobId, selectedId);
+    }, 1200);
     return () => window.clearInterval(timer);
-  }, [jobId, job?.status]);
-
-  useEffect(() => {
-    if (job?.status === "completed" && jobId) {
-      void fetchResults(jobId);
-      void fetchReport(jobId);
-    }
-  }, [job?.status, jobId]);
-
-  useEffect(() => {
-    setFocusedRegion(null);
-  }, [selectedId]);
+  }, [job?.status, loadJobBundle, selectedId, selectedJobId]);
 
   const selectedStructure = useMemo(() => {
     if (!results?.structures.length) {
-      return null;
+      return project?.target_structure ?? null;
     }
     return results.structures.find((item) => item.id === selectedId) ?? results.structures[0];
-  }, [results, selectedId]);
-
-  async function refreshJob(id = jobId) {
-    if (!id) {
-      return;
-    }
-    const response = await fetch(`${API_BASE}/api/jobs/${id}`);
-    if (!response.ok) {
-      return;
-    }
-    const data = await response.json();
-    setJob(data.job);
-    if (data.job.status === "completed") {
-      await fetchResults(id);
-    }
-  }
-
-  async function fetchResults(id: string) {
-    const response = await fetch(`${API_BASE}/api/jobs/${id}/results`);
-    if (!response.ok) {
-      return;
-    }
-    const data = await response.json();
-    setResults(data);
-    if (!selectedId && data.structures?.length) {
-      setSelectedId(data.structures[0].id);
-    }
-  }
-
-  async function fetchReport(id: string) {
-    const response = await fetch(`${API_BASE}/api/jobs/${id}/report.md`);
-    if (!response.ok) {
-      return;
-    }
-    setReportMarkdown(await response.text());
-  }
-
-  function onFilesChanged(event: ChangeEvent<HTMLInputElement>) {
-    const nextFiles = Array.from(event.target.files ?? []);
-    setFiles(nextFiles);
-    setNotice(null);
-  }
+  }, [project?.target_structure, results, selectedId]);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!files.length) {
-      setNotice("Select at least one structure file or zip archive.");
+    if (!files.length || !projectId) {
+      setNotice("Select at least one candidate structure or zip archive.");
       return;
     }
     setSubmitting(true);
     setNotice(null);
-    setResults(null);
-    setReportMarkdown("");
-    setSelectedId(null);
     setFocusedRegion(null);
-
-    const formData = new FormData();
-    files.forEach((file) => formData.append("files", file));
-    formData.append("query", query);
-    formData.append("profile", profile);
-    formData.append("rank_by", rankBy);
-    formData.append("glob_pattern", "*");
-    formData.append("chain_a", chainA);
-    formData.append("chain_b", chainB);
-    formData.append("max_workers", String(maxWorkers));
-    formData.append("enable_llm_synthesis", String(enableLlmSynthesis));
-    formData.append("llm_provider", llmProvider);
-    formData.append("llm_model", llmModel);
-    formData.append("llm_base_url", llmBaseUrl);
-    formData.append("llm_api_key", llmApiKey);
-    formData.append("llm_temperature", "0.2");
-
     try {
-      const response = await fetch(`${API_BASE}/api/jobs`, {
-        method: "POST",
-        body: formData,
+      const created = await createProjectJob(projectId, {
+        files,
+        query,
+        profile,
+        rankBy,
+        chainA,
+        chainB,
+        maxWorkers,
+        enableLlmSynthesis,
+        llmProvider,
+        llmModel,
+        llmBaseUrl,
+        llmApiKey,
       });
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.detail ?? "Job creation failed.");
-      }
-      const data = await response.json();
-      setJobId(data.job_id);
-      setJob(data.job);
-      setNotice(`Job ${data.job_id} queued.`);
-      await refreshJob(data.job_id);
+      setFiles([]);
+      setJob(created.job);
+      setSelectedJobId(created.job_id);
+      setResults(null);
+      setReportMarkdown("");
+      await refreshProjects();
+      navigate(`/projects/${projectId}/jobs/${created.job_id}`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Job creation failed.");
     } finally {
@@ -299,65 +558,57 @@ export default function App() {
     }
   }
 
-  function selectEvidence(key: string) {
-    setActiveEvidence(key);
+  async function onSelectStructure(id: string) {
+    setSelectedId(id);
     setFocusedRegion(null);
-  }
-
-  function selectReportRegion(region: FocusedRegion) {
-    setActiveEvidence(region.evidenceKey);
-    setFocusedRegion(region);
+    if (projectId && selectedJobId) {
+      updateProject(projectId, { selected_job_id: selectedJobId, selected_structure_id: id })
+        .then(setProject)
+        .then(() => refreshProjects())
+        .catch(() => undefined);
+    }
   }
 
   const progress = job?.total_count ? job.completed_count / job.total_count : 0;
 
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <LogoMark />
-        <div className="topbar-actions">
-          <StatusPill online={apiOnline} synthesis={synthesisStatus} />
-          <button className="icon-button" onClick={() => void refreshJob()} title="Refresh job">
-            <RefreshCw size={18} />
+    <div className="project-layout">
+      <section className="center-column batch-column">
+        <PageTitle
+          eyebrow={project?.name || "Project"}
+          title="Batch"
+          action={
+            project && (
+              <Link className="secondary-button" to={`/projects/${project.id}/chat`}>
+                <MessageSquare size={17} />
+                <span>Chat</span>
+              </Link>
+            )
+          }
+        />
+        <form className="batch-runner" onSubmit={onSubmit}>
+          <input
+            ref={fileInputRef}
+            className="file-input"
+            type="file"
+            multiple
+            accept=".pdb,.cif,.mmcif,.zip"
+            onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
+          />
+          <button className="upload-drop" type="button" onClick={() => fileInputRef.current?.click()}>
+            <Upload size={20} />
+            <span>{files.length ? `${files.length} file(s) selected` : "Select candidates"}</span>
           </button>
-        </div>
-      </header>
-
-      <main className="workspace">
-        <section className="panel control-panel">
-          <div className="panel-heading">
-            <FileArchive size={19} />
-            <h2>Batch Input</h2>
-          </div>
-
-          <form onSubmit={onSubmit} className="control-form">
-            <input
-              ref={fileInputRef}
-              className="file-input"
-              type="file"
-              multiple
-              accept=".pdb,.cif,.mmcif,.zip"
-              onChange={onFilesChanged}
-            />
-            <button className="upload-drop" type="button" onClick={() => fileInputRef.current?.click()}>
-              <Upload size={20} />
-              <span>{files.length ? `${files.length} file(s) selected` : "Select PDB/CIF files"}</span>
-            </button>
-
-            {files.length > 0 && (
-              <div className="file-list">
-                {files.slice(0, 5).map((file) => (
-                  <span key={`${file.name}-${file.size}`}>{file.name}</span>
-                ))}
-                {files.length > 5 && <span>+{files.length - 5} more</span>}
-              </div>
-            )}
-
-            <label>
-              Query
-              <textarea value={query} onChange={(event) => setQuery(event.target.value)} rows={4} />
-            </label>
-
+          {files.length > 0 && (
+            <div className="file-list">
+              {files.slice(0, 5).map((file) => (
+                <span key={`${file.name}-${file.size}`}>{file.name}</span>
+              ))}
+              {files.length > 5 && <span>+{files.length - 5} more</span>}
+            </div>
+          )}
+          <textarea value={query} onChange={(event) => setQuery(event.target.value)} rows={3} />
+          <div className="run-settings">
             <label>
               Profile
               <select
@@ -381,7 +632,6 @@ export default function App() {
                 )}
               </select>
             </label>
-
             <label>
               Rank by
               <select value={rankBy} onChange={(event) => setRankBy(event.target.value)}>
@@ -392,8 +642,17 @@ export default function App() {
                 ))}
               </select>
             </label>
-
-            <div className="inline-grid">
+            <button className="primary-button" type="submit" disabled={submitting}>
+              {submitting ? <Loader2 size={18} className="spin" /> : <Play size={18} />}
+              <span>Run Batch</span>
+            </button>
+          </div>
+          <details className="advanced-panel">
+            <summary>
+              <SlidersHorizontal size={16} />
+              <span>Advanced</span>
+            </summary>
+            <div className="advanced-grid">
               <label>
                 Chain A
                 <input value={chainA} onChange={(event) => setChainA(event.target.value)} placeholder="auto" />
@@ -402,78 +661,70 @@ export default function App() {
                 Chain B
                 <input value={chainB} onChange={(event) => setChainB(event.target.value)} placeholder="auto" />
               </label>
+              <label>
+                Workers
+                <input
+                  type="number"
+                  min={1}
+                  max={12}
+                  value={maxWorkers}
+                  onChange={(event) => setMaxWorkers(Number(event.target.value))}
+                />
+              </label>
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={enableLlmSynthesis}
+                  onChange={(event) => setEnableLlmSynthesis(event.target.checked)}
+                />
+                <span>LLM synthesis</span>
+              </label>
+              {enableLlmSynthesis && (
+                <>
+                  <label>
+                    Provider
+                    <select
+                      value={llmProvider}
+                      onChange={(event) => {
+                        const next = providerOptions.find((item) => item.value === event.target.value);
+                        setLlmProvider(event.target.value);
+                        if (next) {
+                          setLlmModel(next.model);
+                          setLlmBaseUrl(next.baseUrl);
+                        }
+                      }}
+                    >
+                      {providerOptions.map((item) => (
+                        <option key={item.value} value={item.value}>
+                          {item.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Model
+                    <input value={llmModel} onChange={(event) => setLlmModel(event.target.value)} />
+                  </label>
+                  <label className="wide-field">
+                    Base URL
+                    <input value={llmBaseUrl} onChange={(event) => setLlmBaseUrl(event.target.value)} />
+                  </label>
+                  <label className="wide-field">
+                    API key
+                    <input
+                      type="password"
+                      value={llmApiKey}
+                      onChange={(event) => setLlmApiKey(event.target.value)}
+                      placeholder="server env by default"
+                    />
+                  </label>
+                </>
+              )}
             </div>
-
-            <label>
-              Workers
-              <input
-                type="number"
-                min={1}
-                max={12}
-                value={maxWorkers}
-                onChange={(event) => setMaxWorkers(Number(event.target.value))}
-              />
-            </label>
-
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={enableLlmSynthesis}
-                onChange={(event) => setEnableLlmSynthesis(event.target.checked)}
-              />
-              <span>LLM synthesis</span>
-            </label>
-
-            {enableLlmSynthesis && (
-              <div className="llm-grid">
-                <label>
-                  Provider
-                  <select
-                    value={llmProvider}
-                    onChange={(event) => {
-                      const next = providerOptions.find((item) => item.value === event.target.value);
-                      setLlmProvider(event.target.value);
-                      if (next) {
-                        setLlmModel(next.model);
-                        setLlmBaseUrl(next.baseUrl);
-                      }
-                    }}
-                  >
-                    {providerOptions.map((item) => (
-                      <option key={item.value} value={item.value}>
-                        {item.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Model
-                  <input value={llmModel} onChange={(event) => setLlmModel(event.target.value)} />
-                </label>
-                <label className="wide-field">
-                  Base URL
-                  <input value={llmBaseUrl} onChange={(event) => setLlmBaseUrl(event.target.value)} />
-                </label>
-                <label className="wide-field">
-                  API key
-                  <input
-                    type="password"
-                    value={llmApiKey}
-                    onChange={(event) => setLlmApiKey(event.target.value)}
-                    placeholder="env or paste key"
-                  />
-                </label>
-              </div>
-            )}
-
-            <button className="primary-button" type="submit" disabled={submitting}>
-              {submitting ? <Loader2 size={18} className="spin" /> : <Play size={18} />}
-              <span>Run Batch</span>
-            </button>
-          </form>
-
-          {notice && <p className="notice">{notice}</p>}
-
+          </details>
+        </form>
+        {notice && <p className="notice">{notice}</p>}
+        <section className="job-overview">
           <div className="job-strip">
             <div>
               <span className="muted">Status</span>
@@ -481,432 +732,158 @@ export default function App() {
             </div>
             <div>
               <span className="muted">Progress</span>
-              <strong>
-                {job ? `${job.completed_count}/${job.total_count || "?"}` : "0/0"}
-              </strong>
+              <strong>{job ? `${job.completed_count}/${job.total_count || "?"}` : "0/0"}</strong>
             </div>
           </div>
           <div className="progress-track">
             <div className="progress-fill" style={{ width: `${Math.round(progress * 100)}%` }} />
           </div>
         </section>
-
-        <section className="panel results-panel">
-          <div className="panel-heading">
-            <Activity size={19} />
-            <h2>Ranked Structures</h2>
+        <section className="results-section">
+          <div className="section-heading">
+            <Activity size={18} />
+            <h2>Ranked structures</h2>
           </div>
           <RankingTable
             ranking={results?.ranking ?? []}
             structures={results?.structures ?? []}
             selectedId={selectedStructure?.id ?? null}
-            onSelect={setSelectedId}
+            onSelect={onSelectStructure}
           />
-          <MetricsGrid structure={selectedStructure} />
         </section>
-
-        <section className="panel viewer-panel">
-          <div className="panel-heading split">
-            <span>
-              <Microscope size={19} />
-              <h2>{selectedStructure?.pdb_id ?? "Structure Viewer"}</h2>
-            </span>
-            {jobId && (
-              <a className="icon-link" href={`${API_BASE}/api/jobs/${jobId}/report.md`} target="_blank">
-                <ArrowDownToLine size={17} />
-                <span>Report</span>
-              </a>
-            )}
-          </div>
-          <div className="viewer-body">
-            <div className="viewer-column">
-              <StructureViewer
-                structure={selectedStructure}
-                activeEvidence={activeEvidence}
-                focusedRegion={focusedRegion}
-              />
-              <EvidenceControls structure={selectedStructure} activeEvidence={activeEvidence} onChange={selectEvidence} />
-            </div>
-            <ReportPanel
-              markdown={reportMarkdown}
-              selectedStructure={selectedStructure}
-              onRegionSelect={selectReportRegion}
-            />
-          </div>
-        </section>
-      </main>
-    </div>
-  );
-}
-
-function LogoMark() {
-  return (
-    <div className="logo-mark">
-      <div className="terminal-line">&gt; MIRA --load model:</div>
-      <pre aria-hidden="true">{".--..--.\n  \\\\  //\n   \\\\//\n   //\\\\\n  //  \\\\"}</pre>
-      <div>
-        <div className="brand-word">MIRA</div>
-        <div className="brand-subtitle">MOLECULAR INTELLIGENCE & REASONING AGENT</div>
-      </div>
-    </div>
-  );
-}
-
-function StatusPill({ online, synthesis }: { online: boolean | null; synthesis: SynthesisStatus | null }) {
-  const apiLabel = online === null ? "checking" : online ? "api online" : "api offline";
-  const synthesisLabel =
-    online && synthesis?.configured
-      ? `${providerLabel(synthesis.provider)} connected`
-      : online
-        ? "synthesis not configured"
-        : "";
-  return (
-    <span className={`status-pill ${online ? "ok" : online === false ? "bad" : ""}`}>
-      <Server size={15} />
-      <span>{apiLabel}</span>
-      {synthesisLabel && <span className="status-pill-secondary">{synthesisLabel}</span>}
-    </span>
-  );
-}
-
-function providerLabel(provider?: string | null) {
-  if (!provider) {
-    return "LLM";
-  }
-  if (provider.toLowerCase() === "minimax") {
-    return "MiniMax";
-  }
-  return provider.charAt(0).toUpperCase() + provider.slice(1);
-}
-
-function RankingTable({
-  ranking,
-  structures,
-  selectedId,
-  onSelect,
-}: {
-  ranking: RankingRow[];
-  structures: StructureResult[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
-}) {
-  if (!structures.length) {
-    return <div className="empty-state">No batch results yet.</div>;
-  }
-  const rankById = new Map(ranking.map((row) => [row.pdb_id, row]));
-  return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Rank</th>
-            <th>Structure</th>
-            <th>Score</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {structures.map((structure) => {
-            const rank = rankById.get(structure.pdb_id);
-            return (
-              <tr
-                key={structure.id}
-                className={selectedId === structure.id ? "selected" : ""}
-                onClick={() => onSelect(structure.id)}
+        {!!jobs.length && (
+          <section className="job-list">
+            {jobs.slice(0, 6).map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={item.id === selectedJobId ? "job-list-item active" : "job-list-item"}
+                onClick={() => navigate(`/projects/${projectId}/jobs/${item.id}`)}
               >
-                <td>{rank?.rank ?? "-"}</td>
-                <td>{structure.pdb_id}</td>
-                <td>{typeof rank?.score === "number" ? rank.score.toFixed(2) : "-"}</td>
-                <td>
-                  {structure.success ? (
-                    <span className="result-status ok">
-                      <CheckCircle2 size={15} /> pass
-                    </span>
-                  ) : (
-                    <span className="result-status bad">
-                      <CircleAlert size={15} /> fail
-                    </span>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                <span>{item.id}</span>
+                <strong>{item.status}</strong>
+              </button>
+            ))}
+          </section>
+        )}
+      </section>
+      <StructureInspector
+        structure={selectedStructure}
+        title={selectedStructure?.pdb_id ?? "Structure"}
+        activeEvidence={activeEvidence}
+        focusedRegion={focusedRegion}
+        reportMarkdown={reportMarkdown}
+        reportHref={selectedJobId ? `${API_BASE}/api/jobs/${selectedJobId}/report.md` : null}
+        onEvidenceChange={(key) => {
+          setActiveEvidence(key);
+          setFocusedRegion(null);
+        }}
+        onRegionSelect={(region) => {
+          setActiveEvidence(region.evidenceKey);
+          setFocusedRegion(region);
+        }}
+      />
     </div>
   );
 }
 
-function MetricsGrid({ structure }: { structure: StructureResult | null }) {
-  const metrics = Object.entries(structure?.metrics ?? {}).filter(([key]) => key !== "total_execution_time");
-  if (!structure) {
-    return <div className="empty-state compact">Select a completed structure to inspect metrics.</div>;
-  }
-  return (
-    <div className="metric-grid">
-      {metrics.slice(0, 8).map(([key, value]) => (
-        <div className="metric-cell" key={key}>
-          <span>{key.replace(/_/g, " ")}</span>
-          <strong>{typeof value === "number" ? value.toFixed(2) : value}</strong>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function StructureViewer({
+function StructureInspector({
   structure,
+  title,
   activeEvidence,
   focusedRegion,
+  reportMarkdown,
+  reportHref,
+  onEvidenceChange,
+  onRegionSelect,
 }: {
   structure: StructureResult | null;
+  title: string;
   activeEvidence: string;
   focusedRegion: FocusedRegion | null;
-}) {
-  const viewerRef = useRef<HTMLDivElement>(null);
-  const [viewerState, setViewerState] = useState("waiting");
-
-  useEffect(() => {
-    const currentStructure = structure;
-    if (!currentStructure || !viewerRef.current) {
-      setViewerState("waiting");
-      return;
-    }
-    const renderedStructure: StructureResult = currentStructure;
-    let cancelled = false;
-
-    async function renderStructure() {
-      if (!window.$3Dmol) {
-        setViewerState("3Dmol unavailable");
-        return;
-      }
-      setViewerState("loading");
-      const response = await fetch(`${API_BASE}${renderedStructure.structure_url}`);
-      const text = await response.text();
-      if (cancelled || !viewerRef.current) {
-        return;
-      }
-      viewerRef.current.innerHTML = "";
-      const viewer = window.$3Dmol.createViewer(viewerRef.current, { backgroundColor: "#f8fbff" });
-      const format = renderedStructure.filename.toLowerCase().endsWith(".cif") ? "cif" : "pdb";
-      viewer.addModel(text, format);
-      viewer.setStyle({}, { cartoon: { color: "spectrum", opacity: 0.82 } });
-      for (const residue of residuesForEvidence(renderedStructure, activeEvidence)) {
-        const selector = selectorForResidue(residue);
-        if (!selector) {
-          continue;
-        }
-        viewer.addStyle(selector, {
-          stick: { color: colorForEvidence(activeEvidence), radius: 0.24 },
-          sphere: { color: colorForEvidence(activeEvidence), radius: 0.72 },
-        });
-      }
-      const focusedSelector = focusedRegion ? selectorForFocusedRegion(focusedRegion) : null;
-      if (focusedSelector) {
-        viewer.addStyle(focusedSelector, {
-          stick: { color: "#f8c94b", radius: 0.34 },
-          sphere: { color: "#f8c94b", radius: 1.05 },
-        });
-        viewer.zoomTo(focusedSelector);
-      } else {
-        viewer.zoomTo();
-      }
-      viewer.render();
-      setViewerState("ready");
-    }
-
-    renderStructure().catch(() => setViewerState("viewer error"));
-    return () => {
-      cancelled = true;
-    };
-  }, [structure?.id, activeEvidence, focusedRegion?.evidenceKey, focusedRegion?.chain, focusedRegion?.residueNumber]);
-
-  return (
-    <div className="viewer-frame">
-      <div ref={viewerRef} className="viewer-canvas" />
-      {viewerState !== "ready" && <div className="viewer-state">{viewerState}</div>}
-    </div>
-  );
-}
-
-function EvidenceControls({
-  structure,
-  activeEvidence,
-  onChange,
-}: {
-  structure: StructureResult | null;
-  activeEvidence: string;
-  onChange: (key: string) => void;
-}) {
-  return (
-    <div className="evidence-panel">
-      <div className="evidence-heading">
-        <SlidersHorizontal size={17} />
-        <span>Evidence</span>
-      </div>
-      <div className="evidence-grid">
-        {evidenceKinds.map((kind) => {
-          const count = evidenceCount(structure, kind.key);
-          return (
-            <button
-              key={kind.key}
-              type="button"
-              className={activeEvidence === kind.key ? "evidence-chip active" : "evidence-chip"}
-              style={{ "--chip-color": kind.color } as CSSProperties}
-              onClick={() => onChange(kind.key)}
-            >
-              <span>{kind.label}</span>
-              <strong>{count}</strong>
-            </button>
-          );
-        })}
-      </div>
-      {structure?.summary && <p className="summary-text">{structure.summary}</p>}
-    </div>
-  );
-}
-
-function ReportPanel({
-  markdown,
-  selectedStructure,
-  onRegionSelect,
-}: {
-  markdown: string;
-  selectedStructure: StructureResult | null;
+  reportMarkdown: string;
+  reportHref: string | null;
+  onEvidenceChange: (key: string) => void;
   onRegionSelect: (region: FocusedRegion) => void;
 }) {
-  const lines = markdown ? markdown.split("\n") : [];
   return (
-    <div className="report-panel">
-      <div className="report-heading">
-        <FileText size={17} />
-        <span>Synthesis Report</span>
+    <aside className="inspector-column">
+      <div className="inspector-heading">
+        <span>
+          <Microscope size={19} />
+          <h2>{title}</h2>
+        </span>
+        {reportHref && (
+          <a className="icon-link" href={reportHref} target="_blank">
+            <ArrowDownToLine size={17} />
+            <span>Report</span>
+          </a>
+        )}
       </div>
-      {lines.length ? (
-        <div className="report-scroll">
-          {lines.map((line, index) => (
-            <ReportLine key={`${line}-${index}`} line={line} onRegionSelect={onRegionSelect} />
-          ))}
-        </div>
-      ) : (
-        <div className="empty-state compact">Run a batch to generate the report.</div>
-      )}
-      {selectedStructure && (
-        <div className="report-focus-note">
-          Report region links highlight residues on <strong>{selectedStructure.pdb_id}</strong>.
-        </div>
-      )}
-    </div>
+      <StructureViewer structure={structure} activeEvidence={activeEvidence} focusedRegion={focusedRegion} />
+      <EvidenceControls structure={structure} activeEvidence={activeEvidence} onChange={onEvidenceChange} />
+      <MetricsGrid structure={structure} />
+      <ReportPanel markdown={reportMarkdown} selectedStructure={structure} onRegionSelect={onRegionSelect} />
+    </aside>
   );
 }
 
-function ReportLine({
-  line,
+function ChatBubble({
+  message,
   onRegionSelect,
 }: {
-  line: string;
+  message: ChatMessage;
   onRegionSelect: (region: FocusedRegion) => void;
 }) {
-  if (!line.trim()) {
-    return <div className="report-spacer" />;
-  }
-  if (line.startsWith("# ")) {
-    const content = renderReportInline(line.slice(2), onRegionSelect);
-    return <h3 className="report-title">{content}</h3>;
-  }
-  if (line.startsWith("## ")) {
-    const content = renderReportInline(line.slice(3), onRegionSelect);
-    return <h4 className="report-section">{content}</h4>;
-  }
-  if (line.startsWith("### ")) {
-    const content = renderReportInline(line.slice(4), onRegionSelect);
-    return <h5 className="report-subsection">{content}</h5>;
-  }
-  if (line.startsWith("#### ")) {
-    const content = renderReportInline(line.slice(5), onRegionSelect);
-    return <h6 className="report-minihead">{content}</h6>;
-  }
-  if (line.startsWith("|")) {
-    return <pre className="report-table-line">{line}</pre>;
-  }
-  if (line.startsWith("- ")) {
-    const content = renderReportInline(line.slice(2), onRegionSelect);
-    return <div className="report-bullet">{content}</div>;
-  }
-  const content = renderReportInline(line, onRegionSelect);
-  return <p className="report-paragraph">{content}</p>;
+  return (
+    <article className={`chat-bubble ${message.role}`}>
+      <div className="chat-role">{message.role === "assistant" ? "MIRA" : "You"}</div>
+      <RenderedMarkdown markdown={message.content} onRegionSelect={onRegionSelect} />
+    </article>
+  );
 }
 
-function renderReportInline(text: string, onRegionSelect: (region: FocusedRegion) => void) {
-  const pattern = /\[([^\]]+)\]\(mira:\/\/region\/([^/]+)\/([^/]+)\/([^)]+)\)/g;
-  const nodes: ReactNode[] = [];
-  let lastIndex = 0;
-  for (const match of text.matchAll(pattern)) {
-    if (match.index > lastIndex) {
-      nodes.push(text.slice(lastIndex, match.index));
-    }
-    const [, label, evidenceKey, chain, residueNumber] = match;
-    nodes.push(
-      <button
-        key={`${evidenceKey}-${chain}-${residueNumber}-${match.index}`}
-        type="button"
-        className="region-link"
-        onClick={() =>
-          onRegionSelect({
-            evidenceKey: decodeURIComponent(evidenceKey),
-            chain: decodeURIComponent(chain),
-            residueNumber: decodeURIComponent(residueNumber),
-          })
-        }
-      >
-        {label}
-      </button>,
-    );
-    lastIndex = match.index + match[0].length;
-  }
-  if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
-  }
-  return nodes.length ? nodes : text;
+function PageTitle({
+  eyebrow,
+  title,
+  action,
+}: {
+  eyebrow: string;
+  title: string;
+  action?: ReactNode;
+}) {
+  return (
+    <header className="page-header compact">
+      <div>
+        <p className="eyebrow">{eyebrow}</p>
+        <h1>{title}</h1>
+      </div>
+      {action}
+    </header>
+  );
 }
 
-function evidenceCount(structure: StructureResult | null, key: string) {
-  if (!structure) {
-    return 0;
+async function loadSelectedProjectStructure(
+  project: Project,
+  setSelectedStructure: (structure: StructureResult | null) => void,
+  setReportMarkdown: (markdown: string) => void,
+) {
+  if (!project.selected_job_id) {
+    setSelectedStructure(project.target_structure ?? null);
+    setReportMarkdown("");
+    return;
   }
-  return structure.features?.[key]?.length ?? 0;
-}
-
-function residuesForEvidence(structure: StructureResult, key: string): ResidueFeature[] {
-  const values = structure.features?.[key] ?? [];
-  if (key === "charge_clusters") {
-    return values.flatMap((cluster) => cluster.residues ?? []);
+  try {
+    const [results, report] = await Promise.all([
+      getResults(project.selected_job_id),
+      getReport(project.selected_job_id).catch(() => ""),
+    ]);
+    const selected =
+      results.structures.find((item) => item.id === project.selected_structure_id) ?? results.structures[0] ?? null;
+    setSelectedStructure(selected ?? project.target_structure ?? null);
+    setReportMarkdown(report);
+  } catch {
+    setSelectedStructure(project.target_structure ?? null);
+    setReportMarkdown("");
   }
-  return values;
-}
-
-function selectorForResidue(residue: ResidueFeature): Record<string, string | number> | null {
-  if (residue.residue_number === undefined || residue.residue_number === null) {
-    return null;
-  }
-  const selector: Record<string, string | number> = { resi: Number(residue.residue_number) };
-  if (residue.chain) {
-    selector.chain = residue.chain;
-  }
-  return selector;
-}
-
-function selectorForFocusedRegion(region: FocusedRegion): Record<string, string | number> | null {
-  if (region.residueNumber === undefined || region.residueNumber === null) {
-    return null;
-  }
-  const selector: Record<string, string | number> = { resi: Number(region.residueNumber) };
-  if (region.chain && region.chain !== "any") {
-    selector.chain = region.chain;
-  }
-  return selector;
-}
-
-function colorForEvidence(key: string) {
-  return evidenceKinds.find((kind) => kind.key === key)?.color ?? "#1f6fbf";
 }

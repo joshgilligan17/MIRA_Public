@@ -6,28 +6,35 @@ import asyncio
 import base64
 import json
 import os
+import re
 import secrets
 import zipfile
 from io import BytesIO
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from structagent.jobs.models import JobConfig
 from structagent.jobs.runner import PROVIDER_DEFAULTS, JobRunner
 from structagent.jobs.store import JobStore
+from structagent.projects import ProjectRecord, ProjectStore
+from structagent.providers import create_provider
 from structagent.profiles import list_analysis_profiles
 
 
 JOB_ROOT = Path(os.environ.get("MIRA_JOB_ROOT", ".mira/jobs"))
+PROJECT_ROOT = Path(os.environ.get("MIRA_PROJECT_ROOT", str(JOB_ROOT.parent / "projects")))
 MAX_UPLOAD_BYTES = int(float(os.environ.get("MIRA_MAX_UPLOAD_MB", "250")) * 1024 * 1024)
 BASIC_AUTH_USERNAME = os.environ.get("MIRA_BASIC_AUTH_USERNAME")
 BASIC_AUTH_PASSWORD = os.environ.get("MIRA_BASIC_AUTH_PASSWORD")
 STORE = JobStore(JOB_ROOT)
+PROJECTS = ProjectStore(PROJECT_ROOT)
 RUNNER = JobRunner(STORE)
 
 app = FastAPI(title="MIRA Batch Lab", version="0.1.0")
@@ -45,6 +52,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class ProjectCreateRequest(BaseModel):
+    name: str = "Untitled project"
+    description: str = ""
+
+
+class ProjectUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    selected_job_id: str | None = None
+    selected_structure_id: str | None = None
+
+
+class ProjectChatRequest(BaseModel):
+    message: str
+    selected_job_id: str | None = None
+    selected_structure_id: str | None = None
 
 
 @app.middleware("http")
@@ -72,6 +97,147 @@ def profiles() -> dict[str, object]:
     return {"profiles": list_analysis_profiles()}
 
 
+@app.get("/api/projects")
+def list_projects() -> dict[str, object]:
+    return {"projects": [_project_response(project) for project in PROJECTS.list_projects()]}
+
+
+@app.post("/api/projects")
+def create_project(payload: ProjectCreateRequest) -> dict[str, object]:
+    project = PROJECTS.create_project(payload.name, payload.description)
+    return {"project": _project_response(project)}
+
+
+@app.get("/api/projects/{project_id}")
+def get_project(project_id: str) -> dict[str, object]:
+    return {"project": _project_response(_get_project_or_404(project_id))}
+
+
+@app.patch("/api/projects/{project_id}")
+def update_project(project_id: str, payload: ProjectUpdateRequest) -> dict[str, object]:
+    _get_project_or_404(project_id)
+    project = PROJECTS.update_project(
+        project_id,
+        name=payload.name,
+        description=payload.description,
+        selected_job_id=payload.selected_job_id,
+        selected_structure_id=payload.selected_structure_id,
+    )
+    return {"project": _project_response(project)}
+
+
+@app.post("/api/projects/{project_id}/target")
+async def upload_project_target(
+    project_id: str,
+    file: Annotated[UploadFile, File(description="Target PDB, CIF, or mmCIF structure")],
+) -> dict[str, object]:
+    _get_project_or_404(project_id)
+    filename = Path(file.filename or "target.pdb").name
+    if Path(filename).suffix.lower() not in {".pdb", ".cif", ".mmcif"}:
+        raise HTTPException(status_code=400, detail="Upload a .pdb, .cif, or .mmcif target structure.")
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"{filename} is larger than the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit.",
+        )
+    project = PROJECTS.save_target(project_id, filename, content)
+    return {"project": _project_response(project)}
+
+
+@app.get("/api/projects/{project_id}/target")
+def get_project_target(project_id: str) -> FileResponse:
+    project = _get_project_or_404(project_id)
+    path = PROJECTS.target_path(project)
+    if not path or not path.exists() or not _is_under(path, PROJECTS.target_dir(project_id)):
+        raise HTTPException(status_code=404, detail="Target structure not found.")
+    return FileResponse(path, media_type="chemical/x-pdb", filename=project.target_original_name or path.name)
+
+
+@app.get("/api/projects/{project_id}/jobs")
+def list_project_jobs(project_id: str) -> dict[str, object]:
+    project = _get_project_or_404(project_id)
+    jobs = []
+    for job_id in project.job_ids:
+        try:
+            jobs.append(STORE.get_record(job_id).to_dict())
+        except FileNotFoundError:
+            continue
+    jobs.sort(key=lambda item: str(item.get("created_at", "")), reverse=True)
+    return {"jobs": jobs}
+
+
+@app.post("/api/projects/{project_id}/jobs")
+async def create_project_job(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    files: Annotated[list[UploadFile] | None, File(description="PDB, CIF, mmCIF, or zip files")] = None,
+    query: Annotated[str, Form()] = "Rank candidate binders for this project target.",
+    profile: Annotated[str, Form()] = "triage_default",
+    rank_by: Annotated[str, Form()] = "stability",
+    glob_pattern: Annotated[str, Form()] = "*",
+    chain_a: Annotated[str | None, Form()] = None,
+    chain_b: Annotated[str | None, Form()] = None,
+    max_workers: Annotated[int, Form()] = 2,
+    enable_llm_synthesis: Annotated[bool, Form()] = True,
+    llm_provider: Annotated[str | None, Form()] = None,
+    llm_model: Annotated[str | None, Form()] = None,
+    llm_base_url: Annotated[str | None, Form()] = None,
+    llm_api_key: Annotated[str | None, Form()] = None,
+    llm_temperature: Annotated[float, Form()] = 0.2,
+) -> dict[str, object]:
+    _get_project_or_404(project_id)
+    return await _queue_upload_job(
+        background_tasks,
+        files,
+        query,
+        profile,
+        rank_by,
+        glob_pattern,
+        chain_a,
+        chain_b,
+        max_workers,
+        enable_llm_synthesis,
+        llm_provider,
+        llm_model,
+        llm_base_url,
+        llm_api_key,
+        llm_temperature,
+        project_id=project_id,
+    )
+
+
+@app.get("/api/projects/{project_id}/chat")
+def get_project_chat(project_id: str) -> dict[str, object]:
+    project = _get_project_or_404(project_id)
+    return {"messages": [message.to_dict() for message in project.chat_messages]}
+
+
+@app.post("/api/projects/{project_id}/chat")
+def send_project_chat(project_id: str, payload: ProjectChatRequest) -> dict[str, object]:
+    project = _get_project_or_404(project_id)
+    message = payload.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
+    PROJECTS.append_chat_message(project_id, "user", message, payload.selected_job_id, payload.selected_structure_id)
+    project = PROJECTS.get_project(project_id)
+    assistant_content = _generate_project_chat_response(
+        project, message, payload.selected_job_id, payload.selected_structure_id
+    )
+    assistant_message = PROJECTS.append_chat_message(
+        project_id,
+        "assistant",
+        assistant_content,
+        payload.selected_job_id,
+        payload.selected_structure_id,
+    )
+    return {
+        "message": assistant_message.to_dict(),
+        "messages": [message.to_dict() for message in PROJECTS.get_project(project_id).chat_messages],
+    }
+
+
 @app.post("/api/jobs")
 async def create_job(
     background_tasks: BackgroundTasks,
@@ -90,6 +256,43 @@ async def create_job(
     llm_api_key: Annotated[str | None, Form()] = None,
     llm_temperature: Annotated[float, Form()] = 0.2,
 ) -> dict[str, object]:
+    return await _queue_upload_job(
+        background_tasks,
+        files,
+        query,
+        profile,
+        rank_by,
+        glob_pattern,
+        chain_a,
+        chain_b,
+        max_workers,
+        enable_llm_synthesis,
+        llm_provider,
+        llm_model,
+        llm_base_url,
+        llm_api_key,
+        llm_temperature,
+    )
+
+
+async def _queue_upload_job(
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] | None,
+    query: str,
+    profile: str,
+    rank_by: str,
+    glob_pattern: str,
+    chain_a: str | None,
+    chain_b: str | None,
+    max_workers: int,
+    enable_llm_synthesis: bool,
+    llm_provider: str | None,
+    llm_model: str | None,
+    llm_base_url: str | None,
+    llm_api_key: str | None,
+    llm_temperature: float,
+    project_id: str | None = None,
+) -> dict[str, object]:
     if not files:
         raise HTTPException(status_code=400, detail="Upload at least one .pdb, .cif, .mmcif, or .zip file.")
 
@@ -107,7 +310,7 @@ async def create_job(
         llm_base_url=llm_base_url or None,
         llm_temperature=llm_temperature,
     )
-    record = STORE.create_job(config)
+    record = STORE.create_job(config, project_id=project_id)
     input_files = await _save_uploads(record.id, files)
     if not input_files:
         STORE.set_status(record.id, "failed", "No supported structure files were uploaded.", error="No files")
@@ -115,6 +318,8 @@ async def create_job(
 
     record.input_files = input_files
     STORE.write_record(record)
+    if project_id:
+        PROJECTS.add_job(project_id, record.id)
     STORE.append_event(record.id, "uploads_saved", f"Saved {len(input_files)} input file(s).")
     background_tasks.add_task(RUNNER.run_job, record.id, llm_api_key or None)
     return {"job_id": record.id, "job": record.to_dict()}
@@ -174,6 +379,294 @@ def get_report(job_id: str) -> PlainTextResponse:
     if not path.exists():
         raise HTTPException(status_code=404, detail="Report is not ready yet.")
     return PlainTextResponse(path.read_text(), media_type="text/markdown")
+
+
+def _project_response(project: ProjectRecord) -> dict[str, object]:
+    data = project.to_dict()
+    data["target_structure"] = _target_structure_response(project)
+    data["job_count"] = len(project.job_ids)
+    return data
+
+
+def _target_structure_response(project: ProjectRecord) -> dict[str, object] | None:
+    path = PROJECTS.target_path(project)
+    if not path or not path.exists():
+        return None
+    filename = project.target_original_name or path.name
+    pdb_id = Path(filename).stem.upper() or "TARGET"
+    return {
+        "id": "target",
+        "pdb_id": pdb_id,
+        "filename": filename,
+        "success": True,
+        "error": None,
+        "profile": "project_target",
+        "chains": [],
+        "metrics": {},
+        "features": {},
+        "warnings": [],
+        "summary": "Project target structure.",
+        "structure_url": f"/api/projects/{project.id}/target",
+    }
+
+
+def _get_project_or_404(project_id: str) -> ProjectRecord:
+    try:
+        return PROJECTS.get_project(project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _generate_project_chat_response(
+    project: ProjectRecord,
+    user_message: str,
+    selected_job_id: str | None,
+    selected_structure_id: str | None,
+) -> str:
+    context = _project_chat_context(project, selected_job_id, selected_structure_id)
+    fallback = _deterministic_chat_response(context)
+    provider_name, model, base_url, api_key = _resolve_chat_llm_config()
+    if not api_key or not model:
+        return fallback
+
+    try:
+        provider = create_provider(
+            provider_name,
+            api_key=api_key,
+            base_url=base_url,
+            timeout=120.0,
+            temperature=0.2,
+        )
+        response = provider.chat(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are MIRA, a molecular structure reasoning assistant inside a project workspace. "
+                        "Answer from the supplied project context only. Be concise, scientific, and practical. "
+                        "If you mention a residue or region, copy one of the supplied markdown region links exactly "
+                        "so the UI can highlight it. Do not invent residues, scores, targets, affinities, wet-lab "
+                        "claims, or biological mechanisms. Do not include hidden reasoning or <think> blocks."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"User message: {user_message}\n\n"
+                        "Project context JSON:\n"
+                        f"{json.dumps(context, indent=2, sort_keys=True)}"
+                    ),
+                },
+            ],
+            model=model,
+            temperature=0.2,
+        )
+        content = _clean_chat_response(response.content)
+        return content or fallback
+    except Exception as exc:
+        return f"{fallback}\n\n_Chat synthesis fell back to local context because the provider returned {type(exc).__name__}._"
+
+
+def _project_chat_context(
+    project: ProjectRecord,
+    selected_job_id: str | None,
+    selected_structure_id: str | None,
+) -> dict[str, object]:
+    target = _target_structure_response(project)
+    job_id = selected_job_id or project.selected_job_id or (project.job_ids[-1] if project.job_ids else None)
+    job = None
+    results: dict[str, object] = {}
+    report_excerpt = ""
+    selected_structure = None
+    if job_id:
+        try:
+            record = STORE.get_record(job_id)
+            job = record.to_dict()
+            results = STORE.load_results(job_id)
+            selected_structure = _select_structure(results, selected_structure_id or project.selected_structure_id)
+            report_path = STORE.report_path(job_id)
+            if report_path.exists():
+                report_excerpt = report_path.read_text()[:5000]
+        except FileNotFoundError:
+            job = None
+
+    return {
+        "project": {
+            "id": project.id,
+            "name": project.name,
+            "description": project.description,
+            "target": target,
+            "job_count": len(project.job_ids),
+        },
+        "selected_job": job,
+        "batch_summary": results.get("summary") if isinstance(results, dict) else None,
+        "ranking": (results.get("ranking") or [])[:8] if isinstance(results, dict) else [],
+        "selected_structure": _structure_chat_context(selected_structure),
+        "report_excerpt": report_excerpt,
+        "recent_chat": [message.to_dict() for message in project.chat_messages[-8:]],
+    }
+
+
+def _select_structure(results: dict[str, object], selected_structure_id: str | None) -> dict[str, object] | None:
+    structures = results.get("structures") if isinstance(results, dict) else None
+    if not isinstance(structures, list) or not structures:
+        return None
+    if selected_structure_id:
+        for item in structures:
+            if not isinstance(item, dict):
+                continue
+            if selected_structure_id in {str(item.get("id")), str(item.get("pdb_id"))}:
+                return item
+    return structures[0] if isinstance(structures[0], dict) else None
+
+
+def _structure_chat_context(structure: dict[str, object] | None) -> dict[str, object] | None:
+    if not structure:
+        return None
+    metrics = structure.get("metrics") if isinstance(structure.get("metrics"), dict) else {}
+    return {
+        "id": structure.get("id"),
+        "pdb_id": structure.get("pdb_id"),
+        "success": structure.get("success"),
+        "error": structure.get("error"),
+        "metrics": {key: value for key, value in metrics.items() if key != "total_execution_time"},
+        "evidence_links": {
+            "interface": _first_refs(structure, "interface_residues", 6),
+            "hotspots": _first_refs(structure, "hotspots", 4),
+            "flexible": _first_refs(structure, "high_bfactor_residues", 4),
+            "geometry": _first_refs(structure, "ramachandran_outliers", 4),
+            "charge": _first_charge_refs(structure, 5),
+        },
+    }
+
+
+def _deterministic_chat_response(context: dict[str, object]) -> str:
+    project = context.get("project") if isinstance(context.get("project"), dict) else {}
+    selected_structure = (
+        context.get("selected_structure") if isinstance(context.get("selected_structure"), dict) else None
+    )
+    batch_summary = context.get("batch_summary") if isinstance(context.get("batch_summary"), dict) else {}
+    target = project.get("target") if isinstance(project, dict) else None
+
+    lines = [f"I have the `{project.get('name', 'project')}` workspace loaded."]
+    if isinstance(target, dict):
+        lines.append(f"The current target is `{target.get('pdb_id')}`.")
+    else:
+        lines.append("No project target has been uploaded yet.")
+
+    if selected_structure:
+        metrics = selected_structure.get("metrics") if isinstance(selected_structure.get("metrics"), dict) else {}
+        lines.append(f"The selected structure is `{selected_structure.get('pdb_id')}` with {_metric_clause(metrics)}.")
+        refs = []
+        evidence = selected_structure.get("evidence_links")
+        if isinstance(evidence, dict):
+            for values in evidence.values():
+                if isinstance(values, list):
+                    refs.extend(str(value) for value in values)
+        if refs:
+            lines.append(f"Useful highlighted regions include {', '.join(refs[:4])}.")
+    elif batch_summary:
+        lines.append(
+            "A batch is available; select a ranked structure to ground the next answer in residue-level evidence."
+        )
+    else:
+        lines.append("Run a candidate batch to add ranked metrics, report synthesis, and clickable residue evidence.")
+    return "\n\n".join(lines)
+
+
+def _resolve_chat_llm_config() -> tuple[str, str | None, str | None, str | None]:
+    provider_name = (os.getenv("MIRA_REPORT_PROVIDER") or _infer_report_provider()).lower()
+    defaults = PROVIDER_DEFAULTS.get(provider_name, PROVIDER_DEFAULTS["openai"])
+    model = os.getenv("MIRA_REPORT_MODEL") or defaults.get("model")
+    base_url = os.getenv("MIRA_REPORT_BASE_URL") or defaults.get("base_url")
+    api_key = os.getenv("MIRA_REPORT_API_KEY") or _first_env_value(defaults.get("env_vars", ()))
+    return provider_name, model, base_url, api_key
+
+
+def _clean_chat_response(markdown: str) -> str:
+    content = re.sub(r"<think>.*?</think>", "", markdown, flags=re.DOTALL | re.IGNORECASE).strip()
+    if content.startswith("```"):
+        content = content.strip("`")
+        if content.startswith("markdown"):
+            content = content[len("markdown") :].strip()
+    return content.strip()
+
+
+def _metric_clause(metrics: dict[str, object]) -> str:
+    clauses = []
+    for key, label, suffix in [
+        ("buried_surface_area", "buried surface area", " A^2"),
+        ("n_interface_residues", "interface residues", ""),
+        ("mean_relative_sasa_percent", "mean relative SASA", "%"),
+        ("mean_bfactor", "mean B-factor", ""),
+        ("charge_cluster_count", "charge clusters", ""),
+    ]:
+        value = _metric(metrics, key)
+        if value is not None:
+            clauses.append(f"{label} {_fmt(value)}{suffix}")
+    return ", ".join(clauses) if clauses else "no rankable metrics available"
+
+
+def _metric(metrics: dict[str, object], key: str) -> float | None:
+    value = metrics.get(key)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _fmt(value: float) -> str:
+    return f"{value:.2f}"
+
+
+def _first_refs(item: dict[str, object], evidence_key: str, limit: int) -> list[str]:
+    features = item.get("features")
+    if not isinstance(features, dict):
+        return []
+    refs = [_region_link(evidence_key, feature) for feature in features.get(evidence_key, [])[:limit]]
+    return _dedupe([ref for ref in refs if ref])
+
+
+def _first_charge_refs(item: dict[str, object], limit: int) -> list[str]:
+    features = item.get("features")
+    if not isinstance(features, dict):
+        return []
+    refs = []
+    for cluster in features.get("charge_clusters", []):
+        if not isinstance(cluster, dict):
+            continue
+        for residue in cluster.get("residues") or []:
+            link = _region_link("charge_clusters", residue)
+            if link and link not in refs:
+                refs.append(link)
+            if len(refs) >= limit:
+                return refs
+    return refs
+
+
+def _region_link(evidence_key: str, feature: object) -> str | None:
+    if not isinstance(feature, dict):
+        return None
+    residue_number = feature.get("residue_number")
+    if residue_number is None:
+        return None
+    chain = feature.get("chain") or "any"
+    residue_name = feature.get("residue_name") or "Residue"
+    label = f"{residue_name}-{residue_number}"
+    if chain != "any":
+        label = f"{label} chain {chain}"
+    href = f"mira://region/{quote(evidence_key)}/{quote(str(chain))}/{quote(str(residue_number))}"
+    return f"[{label}]({href})"
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen = set()
+    deduped = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
 
 
 def _get_record_or_404(job_id: str):
@@ -312,4 +805,15 @@ for candidate in [
         break
 
 if dist_dir and dist_dir.exists():
-    app.mount("/", StaticFiles(directory=dist_dir, html=True), name="mira-web")
+    assets_dir = dist_dir / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="mira-assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_spa(full_path: str) -> FileResponse:
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not found")
+        requested = dist_dir / full_path
+        if requested.is_file() and _is_under(requested, dist_dir):
+            return FileResponse(requested)
+        return FileResponse(dist_dir / "index.html")

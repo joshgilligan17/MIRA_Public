@@ -36,6 +36,7 @@ class JobRecord:
     config: JobConfig
     created_at: str
     updated_at: str
+    project_id: str | None = None
     input_files: list[str] = field(default_factory=list)
     total_count: int = 0
     completed_count: int = 0
@@ -49,6 +50,7 @@ class JobRecord:
             "config": self.config.__dict__,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "project_id": self.project_id,
             "input_files": self.input_files,
             "total_count": self.total_count,
             "completed_count": self.completed_count,
@@ -65,6 +67,7 @@ class JobRecord:
             config=config,
             created_at=data["created_at"],
             updated_at=data["updated_at"],
+            project_id=data.get("project_id"),
             input_files=data.get("input_files") or [],
             total_count=data.get("total_count", 0),
             completed_count=data.get("completed_count", 0),

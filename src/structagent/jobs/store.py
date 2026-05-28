@@ -20,10 +20,17 @@ class JobStore:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
 
-    def create_job(self, config: JobConfig) -> JobRecord:
+    def create_job(self, config: JobConfig, project_id: str | None = None) -> JobRecord:
         job_id = uuid4().hex[:12]
         now = _now()
-        record = JobRecord(id=job_id, status="queued", config=config, created_at=now, updated_at=now)
+        record = JobRecord(
+            id=job_id,
+            status="queued",
+            config=config,
+            created_at=now,
+            updated_at=now,
+            project_id=project_id,
+        )
         self.job_dir(job_id).mkdir(parents=True, exist_ok=True)
         self.input_dir(job_id).mkdir(parents=True, exist_ok=True)
         self.write_record(record)

@@ -12,6 +12,7 @@ RUN npm run build
 FROM python:3.11-slim AS runtime
 
 ENV MIRA_JOB_ROOT=/data/mira/jobs \
+    MIRA_PROJECT_ROOT=/data/mira/projects \
     PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -34,7 +35,7 @@ ARG MIRA_GID=10001
 
 RUN addgroup --system --gid "${MIRA_GID}" mira \
     && adduser --system --uid "${MIRA_UID}" --ingroup mira mira \
-    && mkdir -p /data/mira/jobs \
+    && mkdir -p /data/mira/jobs /data/mira/projects \
     && chown -R mira:mira /data/mira /app
 
 USER mira

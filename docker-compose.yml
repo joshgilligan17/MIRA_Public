@@ -8,8 +8,10 @@ services:
       - .env
     environment:
       MIRA_JOB_ROOT: /data/mira/jobs
+      MIRA_PROJECT_ROOT: /data/mira/projects
     volumes:
       - ${MIRA_DATA_DIR:-./data/mira/jobs}:/data/mira/jobs
+      - ${MIRA_PROJECT_DIR:-./data/mira/projects}:/data/mira/projects
     expose:
       - "8000"
 
