@@ -199,6 +199,8 @@ PROJECT_CHAT_TOOL_SCHEMAS: list[dict[str, Any]] = [
 
 def message_may_need_project_tool(message: str) -> bool:
     lowered = message.lower()
+    if message_is_results_status_query(message):
+        return bool(extract_pdb_id(message))
     action_words = (
         "load",
         "open",
@@ -233,12 +235,50 @@ def message_may_need_project_tool(message: str) -> bool:
     return bool(PDB_ID_PATTERN.search(message)) or any(word in lowered for word in action_words)
 
 
+def message_is_results_status_query(message: str) -> bool:
+    lowered = message.lower()
+    status_words = (
+        "result",
+        "results",
+        "status",
+        "progress",
+        "finished",
+        "complete",
+        "completed",
+        "done",
+        "what happened",
+        "what did",
+        "how did",
+        "generated",
+        "generations",
+        "sequence design",
+        "sequence designs",
+    )
+    mutating_phrases = (
+        "generate",
+        "design me",
+        "make ",
+        "create ",
+        "start ",
+        "run ",
+        "launch ",
+        "redesign ",
+        "design a",
+        "design new",
+    )
+    if not any(word in lowered for word in status_words):
+        return False
+    return not any(phrase in lowered for phrase in mutating_phrases)
+
+
 def fallback_project_tool_calls(message: str) -> list[dict[str, Any]]:
     lowered = message.lower()
     pdb_id = extract_pdb_id(message)
     calls: list[dict[str, Any]] = []
     if pdb_id:
         calls.append({"tool": "load_pdb_id", "args": {"pdb_id": pdb_id}, "purpose": "Detected explicit PDB ID."})
+    if message_is_results_status_query(message):
+        return calls[:1]
     if any(word in lowered for word in ("analyze", "analyse", "flexible", "sasa", "charge", "ramachandran")):
         calls.append({"tool": "analyze_structure", "args": {}, "purpose": "Detected target-analysis request."})
     if any(word in lowered for word in ("batch", "rank", "screen")):
@@ -973,7 +1013,7 @@ def _execute_design_adapter(project_store: ProjectStore, project_id: str, run_id
             _, structure = project_store.save_structure(project_id, path.name, path.read_bytes())
             generated_ids.append(structure.id)
         if not result.success:
-            project_store.update_design_run(
+            updated_run = project_store.update_design_run(
                 project_id,
                 run_id,
                 status=result.status,
@@ -983,8 +1023,9 @@ def _execute_design_adapter(project_store: ProjectStore, project_id: str, run_id
                 logs=result.logs,
                 error=result.error,
             )
+            _append_design_completion_message(project_store, project_id, updated_run)
             return
-        project_store.update_design_run(
+        updated_run = project_store.update_design_run(
             project_id,
             run_id,
             status="completed",
@@ -994,8 +1035,64 @@ def _execute_design_adapter(project_store: ProjectStore, project_id: str, run_id
             logs=result.logs,
             error=None,
         )
+        _append_design_completion_message(project_store, project_id, updated_run)
     except Exception as exc:
-        project_store.update_design_run(project_id, run_id, status="failed", error=str(exc))
+        updated_run = project_store.update_design_run(project_id, run_id, status="failed", error=str(exc))
+        _append_design_completion_message(project_store, project_id, updated_run)
+
+
+def _append_design_completion_message(project_store: ProjectStore, project_id: str, run: Any) -> None:
+    project = project_store.get_project(project_id)
+    sequence_count = len(run.generated_sequences or [])
+    structure_count = len(run.generated_structure_ids or [])
+    fallback_count = len((run.parameters or {}).get("fallbacks") or [])
+    conversion = (run.parameters or {}).get("target_conversion")
+    lines = []
+    if run.status == "completed":
+        lines.append(f"Design run `{run.id}` completed with `{run.library}`.")
+        if sequence_count:
+            lines.append(f"Generated `{sequence_count}` sequence design(s).")
+        if structure_count:
+            lines.append(f"Saved `{structure_count}` generated structure file(s) into the project workspace.")
+    else:
+        lines.append(f"Design run `{run.id}` finished with status `{run.status}` for `{run.library}`.")
+        if run.error:
+            lines.append(f"Error: {run.error}")
+    if conversion:
+        lines.append(f"Prepared the target with `{conversion}` before running the model.")
+    if fallback_count:
+        lines.append(f"Tried `{fallback_count}` fallback path(s); see the run logs in Workspace for details.")
+    sequence_preview = []
+    for item in (run.generated_sequences or [])[:3]:
+        sequence = str(item.get("sequence") or "")
+        if sequence:
+            sequence_preview.append(f"- `{item.get('id') or 'sequence'}`: `{sequence[:80]}`")
+    if sequence_preview:
+        lines.append("Top sequence preview:\n" + "\n".join(sequence_preview))
+    lines.append("Open Workspace to inspect the saved generation folder and use the candidates for filtering.")
+    project_store.append_chat_message(
+        project_id,
+        "assistant",
+        "\n\n".join(lines),
+        project.selected_job_id,
+        project.selected_structure_id,
+        tool_events=[
+            {
+                "tool": "generate_design_candidates",
+                "success": run.status == "completed",
+                "data": f"Design run {run.id} {run.status}.",
+                "error": run.error,
+                "raw": {
+                    "status": run.status,
+                    "design_run_id": run.id,
+                    "library": run.library,
+                    "generated_sequences": sequence_count,
+                    "generated_structures": structure_count,
+                    "fallback_count": fallback_count,
+                },
+            }
+        ],
+    )
 
 
 def _tool_error(project: ProjectRecord, tool_name: str, message: str) -> tuple[ProjectRecord, ToolResult]:

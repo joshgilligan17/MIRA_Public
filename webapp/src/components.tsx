@@ -249,18 +249,15 @@ export function EvidenceControls({
           );
         })}
       </div>
-      {structure?.summary && <p className="summary-text">{structure.summary}</p>}
     </div>
   );
 }
 
 export function ReportPanel({
   markdown,
-  selectedStructure,
   onRegionSelect,
 }: {
   markdown: string;
-  selectedStructure: StructureResult | null;
   onRegionSelect: (region: FocusedRegion) => void;
 }) {
   return (
@@ -273,11 +270,6 @@ export function ReportPanel({
         <RenderedMarkdown markdown={markdown} onRegionSelect={onRegionSelect} className="report-scroll" />
       ) : (
         <div className="empty-state compact">No synthesis report selected.</div>
-      )}
-      {selectedStructure && (
-        <div className="report-focus-note">
-          Region links highlight residues on <strong>{selectedStructure.pdb_id}</strong>.
-        </div>
       )}
     </div>
   );

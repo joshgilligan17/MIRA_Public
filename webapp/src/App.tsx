@@ -1,7 +1,6 @@
 import {
   Activity,
   ArrowDownToLine,
-  Dna,
   FileArchive,
   Folder,
   FolderPlus,
@@ -115,6 +114,10 @@ function MiraWorkspace() {
             element={<ChatPage refreshProjects={refreshProjects} />}
           />
           <Route
+            path="/projects/:projectId/workspace"
+            element={<BatchPage profiles={profiles} refreshProjects={refreshProjects} />}
+          />
+          <Route
             path="/projects/:projectId/batch"
             element={<BatchPage profiles={profiles} refreshProjects={refreshProjects} />}
           />
@@ -141,11 +144,7 @@ function Sidebar({
   const location = useLocation();
   const activeProjectId = location.pathname.match(/\/projects\/([^/]+)/)?.[1] ?? null;
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
-  const resultsHref = activeProject?.selected_job_id
-    ? `/projects/${activeProject.id}/jobs/${activeProject.selected_job_id}`
-    : activeProject
-      ? `/projects/${activeProject.id}/batch`
-      : "/projects";
+  const workspaceActive = Boolean(activeProject && /\/projects\/[^/]+\/(workspace|batch|jobs)/.test(location.pathname));
 
   return (
     <aside className="sidebar">
@@ -168,15 +167,11 @@ function Sidebar({
               <span>Chat</span>
             </NavLink>
             <NavLink
-              to={`/projects/${activeProject.id}/batch`}
-              className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
+              to={`/projects/${activeProject.id}/workspace`}
+              className={() => (workspaceActive ? "nav-item active" : "nav-item")}
             >
               <FileArchive size={18} />
-              <span>Designs</span>
-            </NavLink>
-            <NavLink to={resultsHref} className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}>
-              <Activity size={18} />
-              <span>Results</span>
+              <span>Workspace</span>
             </NavLink>
           </>
         )}
@@ -191,7 +186,7 @@ function Sidebar({
               className={project.id === activeProjectId ? "project-link active" : "project-link"}
             >
               <span>{project.name}</span>
-              <small>{project.job_count} batch runs</small>
+              <small>{project.design_run_ids?.length ?? 0} generations</small>
             </Link>
           ))}
           {!projects.length && <div className="sidebar-empty">No projects yet.</div>}
@@ -287,7 +282,7 @@ function ProjectsPage({
               </div>
               <div className="project-card-meta">
                 <span>{project.target_original_name || "No target"}</span>
-                <span>{project.job_count} batch runs</span>
+                <span>{project.job_count} screens</span>
               </div>
             </Link>
             <div className="project-card-actions">
@@ -326,11 +321,13 @@ function ChatPage({ refreshProjects }: { refreshProjects: () => Promise<void> })
   const [activeEvidence, setActiveEvidence] = useState("interface_residues");
   const [focusedRegion, setFocusedRegion] = useState<FocusedRegion | null>(null);
 
-  const loadChatProject = useCallback(async () => {
+  const loadChatProject = useCallback(async (silent = false) => {
     if (!projectId) {
       return;
     }
-    setLoading(true);
+    if (!silent) {
+      setLoading(true);
+    }
     try {
       const [nextProject, nextMessages] = await Promise.all([getProject(projectId), getProjectChat(projectId)]);
       setProject(nextProject);
@@ -339,13 +336,29 @@ function ChatPage({ refreshProjects }: { refreshProjects: () => Promise<void> })
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Project load failed.");
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   }, [projectId]);
 
   useEffect(() => {
     void loadChatProject();
   }, [loadChatProject]);
+
+  const activeDesignRun = (project?.design_runs ?? []).some((run) =>
+    ["preparing", "queued", "running"].includes(run.status),
+  );
+
+  useEffect(() => {
+    if (!activeDesignRun) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void loadChatProject(true);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [activeDesignRun, loadChatProject]);
 
   async function onTargetChanged(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -454,9 +467,9 @@ function ChatPage({ refreshProjects }: { refreshProjects: () => Promise<void> })
           title="Chat"
           action={
             project && (
-              <Link className="secondary-button" to={`/projects/${project.id}/batch`}>
+              <Link className="secondary-button" to={`/projects/${project.id}/workspace`}>
                 <FileArchive size={17} />
-                <span>Analyze candidate binders</span>
+                <span>Open workspace</span>
               </Link>
             )
           }
@@ -563,7 +576,7 @@ function BatchPage({
   const [activeEvidence, setActiveEvidence] = useState("interface_residues");
   const [focusedRegion, setFocusedRegion] = useState<FocusedRegion | null>(null);
   const [files, setFiles] = useState<File[]>([]);
-  const [query, setQuery] = useState("Rank candidate binders for this project target.");
+  const [query, setQuery] = useState("Filter and rank candidate binders for this project target.");
   const [profile, setProfile] = useState("triage_default");
   const [rankBy, setRankBy] = useState("stability");
   const [chainA, setChainA] = useState("");
@@ -710,7 +723,7 @@ function BatchPage({
       <section className="center-column batch-column">
         <PageTitle
           eyebrow={project?.name || "Project"}
-          title="Designs"
+          title="Workspace"
           action={
             project && (
               <Link className="secondary-button" to={`/projects/${project.id}/chat`}>
@@ -720,8 +733,12 @@ function BatchPage({
             )
           }
         />
-        <DesignRunsPanel designRuns={designRuns} projectId={projectId} />
+        <WorkspacePanel project={project} designRuns={designRuns} jobs={jobs} projectId={projectId} />
         <form className="batch-runner" onSubmit={onSubmit}>
+          <div className="section-heading">
+            <FileArchive size={18} />
+            <h2>Screen candidate structures</h2>
+          </div>
           <input
             ref={fileInputRef}
             className="file-input"
@@ -927,21 +944,32 @@ function BatchPage({
   );
 }
 
-function DesignRunsPanel({ designRuns, projectId }: { designRuns: ProjectDesignRun[]; projectId: string }) {
+function WorkspacePanel({
+  project,
+  designRuns,
+  jobs,
+  projectId,
+}: {
+  project: Project | null;
+  designRuns: ProjectDesignRun[];
+  jobs: Job[];
+  projectId: string;
+}) {
   const recentRuns = designRuns.slice(0, 5);
   const activeRun = recentRuns.find((run) => ["preparing", "queued", "running"].includes(run.status));
   const sequenceCount = designRuns.reduce((total, run) => total + (run.generated_sequences?.length ?? 0), 0);
   const structureCount = designRuns.reduce((total, run) => total + (run.generated_structure_ids?.length ?? 0), 0);
+  const projectStructureCount = project?.structures?.length ?? 0;
 
   return (
     <section className="design-panel">
       <div className="section-heading">
-        <Dna size={18} />
-        <h2>Design generation</h2>
+        <Folder size={18} />
+        <h2>Project workspace</h2>
       </div>
       <div className="design-summary">
         <div>
-          <span className="muted">Runs</span>
+          <span className="muted">Generation folders</span>
           <strong>{designRuns.length}</strong>
         </div>
         <div>
@@ -950,7 +978,7 @@ function DesignRunsPanel({ designRuns, projectId }: { designRuns: ProjectDesignR
         </div>
         <div>
           <span className="muted">Structures</span>
-          <strong>{structureCount}</strong>
+          <strong>{structureCount || projectStructureCount}</strong>
         </div>
       </div>
       {activeRun && (
@@ -961,6 +989,23 @@ function DesignRunsPanel({ designRuns, projectId }: { designRuns: ProjectDesignR
           </span>
         </div>
       )}
+      <div className="workspace-folders">
+        <WorkspaceFolder
+          title="Generations"
+          count={designRuns.length}
+          detail={`${sequenceCount} sequence design(s), ${structureCount} generated structure file(s)`}
+        />
+        <WorkspaceFolder
+          title="Uploaded structures"
+          count={projectStructureCount}
+          detail={project?.target_original_name ? `Target: ${project.target_original_name}` : "No target uploaded"}
+        />
+        <WorkspaceFolder
+          title="Filtered batches"
+          count={jobs.length}
+          detail={jobs[0] ? `Latest: ${jobs[0].status}` : "No candidate screens yet"}
+        />
+      </div>
       <div className="design-run-list">
         {recentRuns.map((run) => (
           <div className="design-run-item" key={run.id}>
@@ -973,12 +1018,19 @@ function DesignRunsPanel({ designRuns, projectId }: { designRuns: ProjectDesignR
               <span>{run.generated_sequences?.length ?? 0} seq</span>
               <span>{run.generated_structure_ids?.length ?? 0} pdb</span>
             </div>
+            {!!run.generated_sequences?.length && (
+              <div className="sequence-preview">
+                {run.generated_sequences.slice(0, 3).map((sequence) => (
+                  <code key={`${run.id}-${sequence.id}`}>{sequence.sequence.slice(0, 72)}</code>
+                ))}
+              </div>
+            )}
             {run.error && <p>{run.error}</p>}
           </div>
         ))}
         {!recentRuns.length && (
           <div className="empty-state compact">
-            Start a design run from chat, then use this page to track generation and filter top candidates.
+            Ask chat to run ProteinMPNN, then generated sequences and structures appear here as project folders.
           </div>
         )}
       </div>
@@ -987,6 +1039,20 @@ function DesignRunsPanel({ designRuns, projectId }: { designRuns: ProjectDesignR
         <span>Open design chat</span>
       </Link>
     </section>
+  );
+}
+
+function WorkspaceFolder({ title, count, detail }: { title: string; count: number; detail: string }) {
+  return (
+    <div className="workspace-folder">
+      <FileArchive size={17} />
+      <div>
+        <strong>
+          {title} <span>{count}</span>
+        </strong>
+        <p>{detail}</p>
+      </div>
+    </div>
   );
 }
 
@@ -1026,7 +1092,7 @@ function StructureInspector({
       <StructureViewer structure={structure} activeEvidence={activeEvidence} focusedRegion={focusedRegion} />
       <EvidenceControls structure={structure} activeEvidence={activeEvidence} onChange={onEvidenceChange} />
       <MetricsGrid structure={structure} />
-      <ReportPanel markdown={reportMarkdown} selectedStructure={structure} onRegionSelect={onRegionSelect} />
+      <ReportPanel markdown={reportMarkdown} onRegionSelect={onRegionSelect} />
     </aside>
   );
 }

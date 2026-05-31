@@ -28,6 +28,7 @@ from structagent.project_tools import (
     ProjectToolRuntime,
     execute_project_chat_tool,
     fallback_project_tool_calls,
+    message_is_results_status_query,
     message_may_need_project_tool,
 )
 from structagent.projects import ProjectRecord, ProjectStore
@@ -612,6 +613,8 @@ def _plan_project_chat_tool_calls(
                         "Use tools when the user asks to load/select a structure, inspect or analyze target "
                         "structure properties, examine contacts/interfaces, start a batch screen from project "
                         "structures, or invoke a configured design library. "
+                        "If the user asks for results, status, progress, or what was generated, return an empty "
+                        "tool_calls array; the answer should use existing project context, not start new work. "
                         "Do not answer the biology question here. Do not invent PDB IDs or structure IDs."
                     ),
                 },
@@ -631,6 +634,13 @@ def _plan_project_chat_tool_calls(
             temperature=0.0,
         )
         parsed_calls = _parse_tool_plan(response.content)
+        if message_is_results_status_query(user_message):
+            parsed_calls = [
+                call
+                for call in parsed_calls
+                if str(call.get("tool") or call.get("name") or "")
+                not in {"generate_design_candidates", "start_batch_from_project"}
+            ]
         return _merge_tool_plan_with_fallback(parsed_calls, fallback_project_tool_calls(user_message))
     except Exception:
         return fallback_project_tool_calls(user_message)
@@ -733,6 +743,8 @@ def _generate_project_chat_response(
                     "content": (
                         "You are MIRA, a molecular structure reasoning assistant inside a project workspace. "
                         "Answer from the supplied project context only. Be concise, scientific, and practical. "
+                        "When a design or batch task has completed, state the completed status, counts, any fallback "
+                        "or conversion used, and the most useful next action in the workspace. "
                         "If you mention a residue or region, copy one of the supplied markdown region links exactly "
                         "so the UI can highlight it. Do not invent residues, scores, targets, affinities, wet-lab "
                         "claims, or biological mechanisms. Do not include hidden reasoning or <think> blocks."
@@ -790,6 +802,8 @@ def _project_chat_context(
             "structures": [_project_structure_response(project, structure) for structure in project.structures],
             "job_count": len(project.job_ids),
         },
+        "design_runs": [_design_run_chat_context(run) for run in PROJECTS.list_design_runs(project.id)[:8]],
+        "jobs": _recent_job_context(project),
         "selected_job": job,
         "batch_summary": results.get("summary") if isinstance(results, dict) else None,
         "ranking": (results.get("ranking") or [])[:8] if isinstance(results, dict) else [],
@@ -798,6 +812,59 @@ def _project_chat_context(
         "report_excerpt": report_excerpt,
         "recent_chat": [message.to_dict() for message in project.chat_messages[-8:]],
     }
+
+
+def _design_run_chat_context(run) -> dict[str, object]:
+    parameters = run.parameters if isinstance(run.parameters, dict) else {}
+    return {
+        "id": run.id,
+        "library": run.library,
+        "status": run.status,
+        "prompt": run.prompt,
+        "num_designs_requested": run.num_designs,
+        "generated_sequence_count": len(run.generated_sequences or []),
+        "generated_structure_count": len(run.generated_structure_ids or []),
+        "generated_structure_ids": run.generated_structure_ids,
+        "sequence_preview": [
+            {
+                "id": item.get("id"),
+                "length": item.get("length"),
+                "sequence": str(item.get("sequence") or "")[:120],
+            }
+            for item in (run.generated_sequences or [])[:5]
+            if isinstance(item, dict)
+        ],
+        "target_conversion": parameters.get("target_conversion"),
+        "fallback_count": len(parameters.get("fallbacks") or [])
+        if isinstance(parameters.get("fallbacks"), list)
+        else 0,
+        "error": run.error,
+        "created_at": run.created_at,
+        "updated_at": run.updated_at,
+    }
+
+
+def _recent_job_context(project: ProjectRecord) -> list[dict[str, object]]:
+    jobs = []
+    for job_id in project.job_ids[-8:]:
+        try:
+            record = STORE.get_record(job_id)
+        except FileNotFoundError:
+            continue
+        jobs.append(
+            {
+                "id": record.id,
+                "status": record.status,
+                "completed_count": record.completed_count,
+                "total_count": record.total_count,
+                "failed_count": record.failed_count,
+                "query": record.config.query,
+                "profile": record.config.profile,
+                "rank_by": record.config.rank_by,
+                "updated_at": record.updated_at,
+            }
+        )
+    return list(reversed(jobs))
 
 
 def _select_project_structure(project: ProjectRecord, selected_structure_id: str | None) -> dict[str, object] | None:
@@ -852,6 +919,8 @@ def _deterministic_chat_response(context: dict[str, object]) -> str:
     batch_summary = context.get("batch_summary") if isinstance(context.get("batch_summary"), dict) else {}
     target = project.get("target") if isinstance(project, dict) else None
     tool_results = context.get("tool_results") if isinstance(context.get("tool_results"), list) else []
+    design_runs = context.get("design_runs") if isinstance(context.get("design_runs"), list) else []
+    jobs = context.get("jobs") if isinstance(context.get("jobs"), list) else []
 
     lines = [f"I have the `{project.get('name', 'project')}` workspace loaded."]
     failed_tool = next((item for item in tool_results if isinstance(item, dict) and not item.get("success")), None)
@@ -883,6 +952,40 @@ def _deterministic_chat_response(context: dict[str, object]) -> str:
         if raw.get("design_run_id"):
             status = raw.get("status")
             lines.append(f"Design run `{raw.get('design_run_id')}` is `{status}` for `{raw.get('library')}`.")
+
+    latest_design = next((item for item in design_runs if isinstance(item, dict)), None)
+    if latest_design:
+        status = latest_design.get("status")
+        sequence_count = latest_design.get("generated_sequence_count") or 0
+        structure_count = latest_design.get("generated_structure_count") or 0
+        lines.append(
+            f"Latest generation `{latest_design.get('id')}` is `{status}` for `{latest_design.get('library')}`."
+        )
+        if status == "completed":
+            lines.append(
+                f"It produced `{sequence_count}` sequence design(s) and `{structure_count}` structure file(s)."
+            )
+            preview = (
+                latest_design.get("sequence_preview") if isinstance(latest_design.get("sequence_preview"), list) else []
+            )
+            if preview:
+                formatted = []
+                for item in preview[:3]:
+                    if isinstance(item, dict) and item.get("sequence"):
+                        formatted.append(f"`{item.get('id')}` `{item.get('sequence')}`")
+                if formatted:
+                    lines.append("Sequence preview: " + "; ".join(formatted) + ".")
+        elif status in {"queued", "running", "preparing"}:
+            lines.append("It is still running; the chat will update when the backend writes the completion record.")
+        elif latest_design.get("error"):
+            lines.append(f"Failure detail: {latest_design.get('error')}")
+
+    latest_job = next((item for item in jobs if isinstance(item, dict)), None)
+    if latest_job:
+        lines.append(
+            f"Latest filtering job `{latest_job.get('id')}` is `{latest_job.get('status')}` "
+            f"({latest_job.get('completed_count')}/{latest_job.get('total_count') or '?'} structures)."
+        )
 
     if isinstance(target, dict):
         lines.append(f"The current target is `{target.get('pdb_id')}`.")

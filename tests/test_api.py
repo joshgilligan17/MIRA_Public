@@ -295,6 +295,28 @@ def test_project_tool_router_keeps_fallback_action_coverage():
     assert [call["tool"] for call in merged] == ["load_pdb_id", "analyze_structure"]
 
 
+def test_project_tool_router_does_not_start_generation_for_results_question():
+    assert project_tools.message_is_results_status_query("What are the ProteinMPNN design results?")
+    assert project_tools.fallback_project_tool_calls("What are the ProteinMPNN design results?") == []
+
+    planned = [
+        {
+            "tool": "generate_design_candidates",
+            "args": {"library": "proteinmpnn"},
+            "purpose": "Incorrect fresh generation.",
+        }
+    ]
+    fallback = project_tools.fallback_project_tool_calls("What are the design results?")
+    filtered = [
+        call
+        for call in planned
+        if str(call.get("tool") or call.get("name") or "")
+        not in {"generate_design_candidates", "start_batch_from_project"}
+    ]
+
+    assert server._merge_tool_plan_with_fallback(filtered, fallback) == []
+
+
 def test_project_chat_can_analyze_uploaded_structure(tmp_path, monkeypatch):
     class FakeProvider:
         def chat(self, messages, model, **kwargs):
@@ -535,6 +557,8 @@ print(f"generated {args.num_seq_per_target} ProteinMPNN sequences")
     assert run["parameters"]["model"] == "proteinmpnn"
     assert len(run["generated_sequences"]) == 5
     assert run["generated_sequences"][0]["sequence"] == "ACDEFGHIKLMNPQRSTVWY"
+    messages = client.get(f"/api/projects/{project_id}/chat").json()["messages"]
+    assert any("completed with `proteinmpnn`" in message["content"] for message in messages)
 
 
 def test_project_chat_proteinmpnn_converts_cif_and_retries_without_chain(tmp_path, monkeypatch):
