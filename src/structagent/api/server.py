@@ -11,7 +11,7 @@ import secrets
 import zipfile
 from io import BytesIO
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.parse import quote
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile, status
@@ -621,7 +621,7 @@ def _plan_project_chat_tool_calls(
             temperature=0.0,
         )
         parsed_calls = _parse_tool_plan(response.content)
-        return parsed_calls if parsed_calls else fallback_project_tool_calls(user_message)
+        return _merge_tool_plan_with_fallback(parsed_calls, fallback_project_tool_calls(user_message))
     except Exception:
         return fallback_project_tool_calls(user_message)
 
@@ -674,6 +674,25 @@ def _parse_tool_plan(content: str) -> list[dict[str, object]]:
             args = {}
         normalized.append({"tool": tool_name, "args": args, "purpose": str(call.get("purpose") or "")})
     return normalized
+
+
+def _merge_tool_plan_with_fallback(
+    planned_calls: list[dict[str, object]], fallback_calls: list[dict[str, Any]]
+) -> list[dict[str, object]]:
+    if not planned_calls:
+        return fallback_calls
+
+    merged = list(planned_calls)
+    planned_tools = {str(call.get("tool") or call.get("name") or "") for call in planned_calls}
+    for call in fallback_calls:
+        tool_name = str(call.get("tool") or call.get("name") or "")
+        if tool_name == "load_pdb_id" and planned_tools.intersection({"load_pdb_id", "select_project_structure"}):
+            continue
+        if tool_name in planned_tools:
+            continue
+        merged.append(call)
+        planned_tools.add(tool_name)
+    return merged[:8]
 
 
 def _generate_project_chat_response(

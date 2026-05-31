@@ -277,6 +277,15 @@ def test_project_chat_can_pull_up_pdb_id_from_message(tmp_path, monkeypatch):
     assert structure_file.content == b"data_1ubq"
 
 
+def test_project_tool_router_keeps_fallback_action_coverage():
+    planned = [{"tool": "load_pdb_id", "args": {"pdb_id": "1UBQ"}, "purpose": "Load requested PDB."}]
+    fallback = project_tools.fallback_project_tool_calls("Pull up 1UBQ and analyze the selected structure.")
+
+    merged = server._merge_tool_plan_with_fallback(planned, fallback)
+
+    assert [call["tool"] for call in merged] == ["load_pdb_id", "analyze_structure"]
+
+
 def test_project_chat_can_analyze_uploaded_structure(tmp_path, monkeypatch):
     class FakeProvider:
         def chat(self, messages, model, **kwargs):
