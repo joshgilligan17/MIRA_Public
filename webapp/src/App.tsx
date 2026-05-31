@@ -1,6 +1,7 @@
 import {
   Activity,
   ArrowDownToLine,
+  Dna,
   FileArchive,
   Folder,
   FolderPlus,
@@ -31,6 +32,7 @@ import {
   Job,
   Profile,
   Project,
+  ProjectDesignRun,
   Results,
   StructureResult,
   SynthesisStatus,
@@ -168,7 +170,7 @@ function Sidebar({
               className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
             >
               <FileArchive size={18} />
-              <span>Batch</span>
+              <span>Designs</span>
             </NavLink>
             <NavLink to={resultsHref} className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}>
               <Activity size={18} />
@@ -603,6 +605,18 @@ function BatchPage({
     }
     return results.structures.find((item) => item.id === selectedId) ?? results.structures[0];
   }, [project?.target_structure, results, selectedId]);
+  const designRuns = project?.design_runs ?? [];
+  const activeDesignRun = designRuns.some((run) => ["preparing", "queued", "running"].includes(run.status));
+
+  useEffect(() => {
+    if (!activeDesignRun) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void loadBatchProject();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [activeDesignRun, loadBatchProject]);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -660,7 +674,7 @@ function BatchPage({
       <section className="center-column batch-column">
         <PageTitle
           eyebrow={project?.name || "Project"}
-          title="Batch"
+          title="Designs"
           action={
             project && (
               <Link className="secondary-button" to={`/projects/${project.id}/chat`}>
@@ -670,6 +684,7 @@ function BatchPage({
             )
           }
         />
+        <DesignRunsPanel designRuns={designRuns} projectId={projectId} />
         <form className="batch-runner" onSubmit={onSubmit}>
           <input
             ref={fileInputRef}
@@ -826,7 +841,7 @@ function BatchPage({
         <section className="results-section">
           <div className="section-heading">
             <Activity size={18} />
-            <h2>Ranked structures</h2>
+            <h2>Top filtered designs</h2>
           </div>
           <RankingTable
             ranking={results?.ranking ?? []}
@@ -834,6 +849,11 @@ function BatchPage({
             selectedId={selectedStructure?.id ?? null}
             onSelect={onSelectStructure}
           />
+          {!results?.ranking.length && (
+            <div className="empty-state compact">
+              Generated structures and uploaded candidates appear here after filtering.
+            </div>
+          )}
         </section>
         {!!jobs.length && (
           <section className="job-list">
@@ -868,6 +888,69 @@ function BatchPage({
         }}
       />
     </div>
+  );
+}
+
+function DesignRunsPanel({ designRuns, projectId }: { designRuns: ProjectDesignRun[]; projectId: string }) {
+  const recentRuns = designRuns.slice(0, 5);
+  const activeRun = recentRuns.find((run) => ["preparing", "queued", "running"].includes(run.status));
+  const sequenceCount = designRuns.reduce((total, run) => total + (run.generated_sequences?.length ?? 0), 0);
+  const structureCount = designRuns.reduce((total, run) => total + (run.generated_structure_ids?.length ?? 0), 0);
+
+  return (
+    <section className="design-panel">
+      <div className="section-heading">
+        <Dna size={18} />
+        <h2>Design generation</h2>
+      </div>
+      <div className="design-summary">
+        <div>
+          <span className="muted">Runs</span>
+          <strong>{designRuns.length}</strong>
+        </div>
+        <div>
+          <span className="muted">Sequences</span>
+          <strong>{sequenceCount}</strong>
+        </div>
+        <div>
+          <span className="muted">Structures</span>
+          <strong>{structureCount}</strong>
+        </div>
+      </div>
+      {activeRun && (
+        <div className="design-active">
+          <Loader2 size={17} className="spin" />
+          <span>
+            {activeRun.library} is {activeRun.status.replace(/_/g, " ")}
+          </span>
+        </div>
+      )}
+      <div className="design-run-list">
+        {recentRuns.map((run) => (
+          <div className="design-run-item" key={run.id}>
+            <div>
+              <strong>{run.library}</strong>
+              <span>{run.prompt}</span>
+            </div>
+            <div className="design-run-meta">
+              <span className={`run-status ${run.status}`}>{run.status.replace(/_/g, " ")}</span>
+              <span>{run.generated_sequences?.length ?? 0} seq</span>
+              <span>{run.generated_structure_ids?.length ?? 0} pdb</span>
+            </div>
+            {run.error && <p>{run.error}</p>}
+          </div>
+        ))}
+        {!recentRuns.length && (
+          <div className="empty-state compact">
+            Start a design run from chat, then use this page to track generation and filter top candidates.
+          </div>
+        )}
+      </div>
+      <Link className="secondary-button design-chat-link" to={`/projects/${projectId}/chat`}>
+        <MessageSquare size={17} />
+        <span>Open design chat</span>
+      </Link>
+    </section>
   );
 }
 

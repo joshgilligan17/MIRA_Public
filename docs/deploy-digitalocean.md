@@ -149,3 +149,39 @@ docker image prune -f
 - Keep Basic Auth enabled until Cloudflare Access is in front of the app.
 - This deployment runs background jobs inside the web process, which is appropriate for class-project testing. A queue/worker split can come later.
 - When Cloudflare Workers AI is approved, we can add a Cloudflare provider and switch synthesis without moving the backend.
+
+## 8. Design-Model GPU Sessions
+
+The default web Droplet should remain CPU-only. For real generative design, use short-lived GPU sessions:
+
+```text
+Local Apple Silicon: ProteinMPNN/LigandMPNN smoke tests and sequence design
+DigitalOcean GPU: RFdiffusion backbones and BindCraft binder campaigns
+MIRA CPU app: project storage, chat, analysis, filtering, synthesis
+```
+
+Recommended first GPU shape:
+
+```text
+RTX 6000 Ada or L40S, 48 GB VRAM
+Expected use: RFdiffusion/BindCraft test campaigns
+Budgeting: roughly $1.57/hour, so $250 covers about 150 GPU hours before storage/network overhead
+```
+
+Keep model weights on an attached volume or object storage cache, but destroy the GPU Droplet when idle. GPU Droplets can keep billing while powered off, so the safe operating pattern is:
+
+```bash
+# 1. Create GPU worker for a session.
+# 2. Pull MIRA and model repos, attach/cache weights.
+# 3. Set real backend env vars:
+MIRA_RFDIFFUSION_REPO=/opt/models/RFdiffusion
+MIRA_RFDIFFUSION_CONTIGS='[A1-100/0 80-120]'
+MIRA_BINDCRAFT_REPO=/opt/models/BindCraft
+MIRA_BINDCRAFT_SETTINGS=/opt/models/bindcraft/settings.json
+
+# 4. Run the design worker/session.
+# 5. Sync generated PDB/CIF/mmCIF outputs into the project.
+# 6. Destroy the GPU worker after the campaign.
+```
+
+The current backend records design runs, generated structures, generated sequences, logs, and artifacts. The next production step is a separate GPU worker process that polls queued `rfdiffusion` and `bindcraft` design runs, writes outputs into the project design folder, then triggers the existing batch filtering path.

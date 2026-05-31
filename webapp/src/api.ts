@@ -122,7 +122,19 @@ export type ProjectDesignRun = {
   target_structure_id?: string | null;
   output_dir?: string | null;
   command?: string | null;
+  num_designs?: number;
+  parameters?: Record<string, any>;
   generated_structure_ids: string[];
+  generated_sequences?: {
+    id: string;
+    header: string;
+    sequence: string;
+    length: number;
+    file: string;
+    path?: string;
+  }[];
+  artifacts?: { file: string; path: string; size_bytes?: number }[];
+  logs?: string;
   error?: string | null;
 };
 

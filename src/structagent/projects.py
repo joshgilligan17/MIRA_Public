@@ -102,11 +102,35 @@ class ProjectDesignRun:
     target_structure_id: str | None = None
     output_dir: str | None = None
     command: str | None = None
+    num_designs: int = 0
+    parameters: dict[str, Any] = field(default_factory=dict)
     generated_structure_ids: list[str] = field(default_factory=list)
+    generated_sequences: list[dict[str, Any]] = field(default_factory=list)
+    artifacts: list[dict[str, Any]] = field(default_factory=list)
+    logs: str = ""
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return _json_safe(
+            {
+                "id": self.id,
+                "library": self.library,
+                "prompt": self.prompt,
+                "status": self.status,
+                "created_at": self.created_at,
+                "updated_at": self.updated_at,
+                "target_structure_id": self.target_structure_id,
+                "output_dir": self.output_dir,
+                "command": self.command,
+                "num_designs": self.num_designs,
+                "parameters": self.parameters,
+                "generated_structure_ids": self.generated_structure_ids,
+                "generated_sequences": self.generated_sequences,
+                "artifacts": self.artifacts,
+                "logs": self.logs,
+                "error": self.error,
+            }
+        )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ProjectDesignRun":
@@ -120,7 +144,12 @@ class ProjectDesignRun:
             target_structure_id=data.get("target_structure_id"),
             output_dir=data.get("output_dir"),
             command=data.get("command"),
+            num_designs=int(data.get("num_designs") or 0),
+            parameters=data.get("parameters") or {},
             generated_structure_ids=data.get("generated_structure_ids") or [],
+            generated_sequences=data.get("generated_sequences") or [],
+            artifacts=data.get("artifacts") or [],
+            logs=data.get("logs") or "",
             error=data.get("error"),
         )
 
@@ -399,6 +428,8 @@ class ProjectStore:
         target_structure_id: str | None,
         output_dir: str | None,
         command: str | None,
+        num_designs: int = 0,
+        parameters: dict[str, Any] | None = None,
         status: str = "queued",
         error: str | None = None,
     ) -> ProjectDesignRun:
@@ -414,6 +445,8 @@ class ProjectStore:
             target_structure_id=target_structure_id,
             output_dir=output_dir,
             command=command,
+            num_designs=num_designs,
+            parameters=parameters or {},
             error=error,
         )
         _write_json(self.design_run_path(project_id, run.id), run.to_dict())

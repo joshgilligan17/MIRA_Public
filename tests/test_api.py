@@ -1,5 +1,7 @@
 """Tests for the local FastAPI batch API."""
 
+import sys
+
 from fastapi.testclient import TestClient
 
 from structagent.api import server
@@ -437,3 +439,90 @@ def test_project_chat_can_create_design_run_setup_record(tmp_path, monkeypatch):
     assert event["raw"]["status"] == "configuration_required"
     assert body["project"]["design_runs"][0]["library"] == "bindcraft"
     assert body["project"]["design_runs"][0]["status"] == "configuration_required"
+
+
+def test_project_chat_runs_configured_proteinmpnn_sequence_design(tmp_path, monkeypatch):
+    fake_repo = tmp_path / "ProteinMPNN"
+    fake_repo.mkdir()
+    (fake_repo / "protein_mpnn_run.py").write_text(
+        """
+import argparse
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--pdb_path")
+parser.add_argument("--out_folder")
+parser.add_argument("--num_seq_per_target", type=int)
+parser.add_argument("--sampling_temp")
+parser.add_argument("--batch_size")
+parser.add_argument("--seed")
+parser.add_argument("--pdb_path_chains", default="")
+args, _ = parser.parse_known_args()
+
+seq_dir = Path(args.out_folder) / "seqs"
+seq_dir.mkdir(parents=True, exist_ok=True)
+stem = Path(args.pdb_path).stem
+with (seq_dir / f"{stem}.fa").open("w") as handle:
+    for index in range(args.num_seq_per_target):
+        handle.write(f">design_{index}|temp={args.sampling_temp}|chains={args.pdb_path_chains}\\n")
+        handle.write("ACDEFGHIKLMNPQRSTVWY\\n")
+print(f"generated {args.num_seq_per_target} ProteinMPNN sequences")
+""".strip()
+    )
+
+    class FakeProvider:
+        def chat(self, messages, model, **kwargs):
+            if "project tool router" in messages[0]["content"]:
+                return ProviderResponse(
+                    content=(
+                        '{"tool_calls":[{"tool":"generate_design_candidates",'
+                        '"args":{"library":"proteinmpnn","num_designs":5,"chain_id":"A",'
+                        '"temperature":"0.2","design_prompt":"redesign target sequence"},'
+                        '"purpose":"Run local sequence design"}]}'
+                    ),
+                    input_tokens=20,
+                    output_tokens=22,
+                )
+            return ProviderResponse(
+                content="Started real ProteinMPNN sequence design.", input_tokens=20, output_tokens=22
+            )
+
+    def fake_create_provider(provider_name, api_key, base_url=None, timeout=120.0, temperature=0.0):
+        return FakeProvider()
+
+    projects = ProjectStore(tmp_path / "projects")
+    monkeypatch.setattr(server, "PROJECTS", projects)
+    monkeypatch.setattr(server, "create_provider", fake_create_provider)
+    monkeypatch.setenv("MIRA_PROTEINMPNN_REPO", str(fake_repo))
+    monkeypatch.setenv("MIRA_PROTEINMPNN_PYTHON", sys.executable)
+    monkeypatch.delenv("MIRA_DESIGN_COMMAND", raising=False)
+    monkeypatch.setenv("MIRA_REPORT_PROVIDER", "openai")
+    monkeypatch.setenv("MIRA_REPORT_MODEL", "fake-model")
+    monkeypatch.setenv("MIRA_REPORT_API_KEY", "test-key")
+    client = TestClient(server.app)
+
+    project_id = client.post("/api/projects", json={"name": "ProteinMPNN chat"}).json()["project"]["id"]
+    with open("tests/data/local/mini_complex.pdb", "rb") as handle:
+        upload = client.post(
+            f"/api/projects/{project_id}/target",
+            files={"file": ("target.pdb", handle, "chemical/x-pdb")},
+        )
+    assert upload.status_code == 200
+
+    chat = client.post(
+        f"/api/projects/{project_id}/chat",
+        json={"message": "Generate five ProteinMPNN sequences for chain A."},
+    )
+
+    assert chat.status_code == 200
+    event = chat.json()["messages"][-1]["tool_events"][0]
+    assert event["tool"] == "generate_design_candidates"
+    assert event["raw"]["backend"] == "local"
+
+    project = client.get(f"/api/projects/{project_id}").json()["project"]
+    run = project["design_runs"][0]
+    assert run["library"] == "proteinmpnn"
+    assert run["status"] == "completed"
+    assert run["parameters"]["model"] == "proteinmpnn"
+    assert len(run["generated_sequences"]) == 5
+    assert run["generated_sequences"][0]["sequence"] == "ACDEFGHIKLMNPQRSTVWY"

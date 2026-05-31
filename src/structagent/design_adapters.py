@@ -1,0 +1,394 @@
+"""Execution adapters for real design-model backends.
+
+The adapters do not simulate generation. They either run an installed model
+entrypoint or return a configuration-required result that tells the operator
+which real backend is missing.
+"""
+
+from __future__ import annotations
+
+import os
+import shlex
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+
+SUPPORTED_DESIGN_SUFFIXES = {".pdb", ".cif", ".mmcif"}
+SEQUENCE_SUFFIXES = {".fa", ".fasta"}
+
+
+@dataclass
+class DesignRequest:
+    library: str
+    target_path: Path
+    output_dir: Path
+    project_id: str
+    run_id: str
+    prompt: str
+    chain_id: str = ""
+    num_designs: int = 5
+    seed: int = 0
+    temperature: str = "0.1"
+    extra_args: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PreparedDesign:
+    status: str
+    command: str | None
+    parameters: dict[str, Any]
+    error: str | None = None
+
+
+@dataclass
+class DesignExecution:
+    success: bool
+    status: str
+    generated_structure_paths: list[Path] = field(default_factory=list)
+    generated_sequences: list[dict[str, Any]] = field(default_factory=list)
+    artifacts: list[dict[str, Any]] = field(default_factory=list)
+    logs: str = ""
+    error: str | None = None
+
+
+def prepare_design(request: DesignRequest) -> PreparedDesign:
+    """Prepare a concrete execution plan for a design backend."""
+
+    library = request.library.lower().strip()
+    if library == "proteinmpnn":
+        return _prepare_proteinmpnn(request)
+    if library == "ligandmpnn":
+        return _prepare_ligandmpnn(request)
+    if library == "rfdiffusion":
+        return _prepare_rfdiffusion(request)
+    if library == "bindcraft":
+        return _prepare_bindcraft(request)
+    return _prepare_custom(request)
+
+
+def execute_design(parameters: dict[str, Any], output_dir: Path) -> DesignExecution:
+    """Run a prepared design command and collect generated artifacts."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    argv = parameters.get("argv")
+    shell_command = parameters.get("shell_command")
+    timeout = int(os.getenv("MIRA_DESIGN_TIMEOUT_SECONDS", "3600"))
+    try:
+        if isinstance(argv, list) and argv:
+            completed = subprocess.run(
+                [str(item) for item in argv],
+                cwd=output_dir,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        elif shell_command:
+            completed = subprocess.run(
+                str(shell_command),
+                shell=True,
+                cwd=output_dir,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        else:
+            return DesignExecution(
+                success=False,
+                status="configuration_required",
+                error="No executable design command is configured.",
+            )
+    except Exception as exc:
+        return DesignExecution(success=False, status="failed", error=str(exc))
+
+    logs = _tail_text("\n".join(part for part in [completed.stdout, completed.stderr] if part), 12000)
+    if completed.returncode != 0:
+        return DesignExecution(
+            success=False,
+            status="failed",
+            logs=logs,
+            error=(completed.stderr or completed.stdout or f"Exited with {completed.returncode}")[-4000:],
+            artifacts=_collect_artifacts(output_dir),
+        )
+
+    structure_paths = [
+        path
+        for path in sorted(output_dir.rglob("*"))
+        if path.is_file() and path.suffix.lower() in SUPPORTED_DESIGN_SUFFIXES
+    ]
+    return DesignExecution(
+        success=True,
+        status="completed",
+        generated_structure_paths=structure_paths,
+        generated_sequences=_collect_sequences(output_dir),
+        artifacts=_collect_artifacts(output_dir),
+        logs=logs,
+    )
+
+
+def _prepare_proteinmpnn(request: DesignRequest) -> PreparedDesign:
+    repo = _env_path("MIRA_PROTEINMPNN_REPO") or _env_path("MIRA_PROTEINMPNN_PATH")
+    script = repo / "protein_mpnn_run.py" if repo else None
+    if not script or not script.exists():
+        return _configuration_required(
+            request,
+            "ProteinMPNN is not installed. Set MIRA_PROTEINMPNN_REPO to the official ProteinMPNN checkout.",
+        )
+
+    argv = [
+        os.getenv("MIRA_PROTEINMPNN_PYTHON") or sys.executable,
+        str(script),
+        "--pdb_path",
+        str(request.target_path),
+        "--out_folder",
+        str(request.output_dir),
+        "--num_seq_per_target",
+        str(request.num_designs),
+        "--sampling_temp",
+        str(request.temperature),
+        "--batch_size",
+        str(int(request.extra_args.get("batch_size") or 1)),
+        "--seed",
+        str(request.seed),
+    ]
+    if request.chain_id:
+        argv.extend(["--pdb_path_chains", request.chain_id.replace(",", " ")])
+    weights = _env_path("MIRA_PROTEINMPNN_WEIGHTS")
+    if weights:
+        argv.extend(["--path_to_model_weights", str(weights)])
+    model_name = os.getenv("MIRA_PROTEINMPNN_MODEL") or request.extra_args.get("model_name")
+    if model_name:
+        argv.extend(["--model_name", str(model_name)])
+    if _truthy(os.getenv("MIRA_PROTEINMPNN_SOLUBLE")):
+        argv.append("--use_soluble_model")
+
+    return _prepared(request, argv=argv, backend="local", model="proteinmpnn")
+
+
+def _prepare_ligandmpnn(request: DesignRequest) -> PreparedDesign:
+    repo = _env_path("MIRA_LIGANDMPNN_REPO") or _env_path("MIRA_LIGANDMPNN_PATH")
+    script = repo / "run.py" if repo else None
+    if not script or not script.exists():
+        return _configuration_required(
+            request,
+            "LigandMPNN is not installed. Set MIRA_LIGANDMPNN_REPO to the official LigandMPNN checkout.",
+        )
+
+    model_type = str(request.extra_args.get("model_type") or os.getenv("MIRA_LIGANDMPNN_MODEL_TYPE") or "protein_mpnn")
+    argv = [
+        os.getenv("MIRA_LIGANDMPNN_PYTHON") or sys.executable,
+        str(script),
+        "--pdb_path",
+        str(request.target_path),
+        "--out_folder",
+        str(request.output_dir),
+        "--model_type",
+        model_type,
+        "--number_of_batches",
+        str(request.num_designs),
+        "--seed",
+        str(request.seed),
+    ]
+    temperature = str(request.temperature)
+    if temperature:
+        argv.extend(["--temperature", temperature])
+    if request.chain_id:
+        argv.extend(["--chains_to_design", request.chain_id.replace(" ", "").replace(",", " ")])
+    for env_name, flag in [
+        ("MIRA_LIGANDMPNN_CHECKPOINT", "--checkpoint_ligand_mpnn"),
+        ("MIRA_LIGANDMPNN_PROTEIN_CHECKPOINT", "--checkpoint_protein_mpnn"),
+    ]:
+        checkpoint = _env_path(env_name)
+        if checkpoint:
+            argv.extend([flag, str(checkpoint)])
+
+    return _prepared(request, argv=argv, backend="local", model="ligandmpnn")
+
+
+def _prepare_rfdiffusion(request: DesignRequest) -> PreparedDesign:
+    template = os.getenv("MIRA_RFDIFFUSION_COMMAND") or os.getenv("MIRA_DESIGN_RFDIFFUSION_COMMAND")
+    if template:
+        return _prepare_template_command(request, template, backend="gpu", model="rfdiffusion")
+
+    repo = _env_path("MIRA_RFDIFFUSION_REPO")
+    script = repo / "scripts" / "run_inference.py" if repo else None
+    contigs = request.extra_args.get("contigs") or os.getenv("MIRA_RFDIFFUSION_CONTIGS")
+    if not script or not script.exists() or not contigs:
+        return _configuration_required(
+            request,
+            "RFdiffusion requires a CUDA GPU worker plus MIRA_RFDIFFUSION_REPO and contigs "
+            "(MIRA_RFDIFFUSION_CONTIGS or chat/tool args).",
+            backend="gpu",
+        )
+
+    output_prefix = request.output_dir / "rfdiffusion"
+    argv = [
+        os.getenv("MIRA_RFDIFFUSION_PYTHON") or sys.executable,
+        str(script),
+        f"inference.input_pdb={request.target_path}",
+        f"inference.output_prefix={output_prefix}",
+        f"inference.num_designs={request.num_designs}",
+        f"contigmap.contigs={contigs}",
+    ]
+    hotspots = request.extra_args.get("hotspot_residues") or os.getenv("MIRA_RFDIFFUSION_HOTSPOTS")
+    if hotspots:
+        argv.append(f"ppi.hotspot_res={hotspots}")
+    return _prepared(request, argv=argv, backend="gpu", model="rfdiffusion", contigs=contigs, hotspots=hotspots)
+
+
+def _prepare_bindcraft(request: DesignRequest) -> PreparedDesign:
+    template = os.getenv("MIRA_BINDCRAFT_COMMAND") or os.getenv("MIRA_DESIGN_BINDCRAFT_COMMAND")
+    if template:
+        return _prepare_template_command(request, template, backend="gpu", model="bindcraft")
+
+    repo = _env_path("MIRA_BINDCRAFT_REPO")
+    script = repo / "bindcraft.py" if repo else None
+    settings = _env_path("MIRA_BINDCRAFT_SETTINGS")
+    if not script or not script.exists() or not settings:
+        return _configuration_required(
+            request,
+            "BindCraft requires a CUDA GPU worker plus MIRA_BINDCRAFT_REPO and MIRA_BINDCRAFT_SETTINGS.",
+            backend="gpu",
+        )
+
+    argv = [
+        os.getenv("MIRA_BINDCRAFT_PYTHON") or sys.executable,
+        str(script),
+        "--settings",
+        str(settings),
+        "--filters",
+        os.getenv("MIRA_BINDCRAFT_FILTERS") or "default_filters",
+        "--advanced",
+        os.getenv("MIRA_BINDCRAFT_ADVANCED") or "default_4stage_multimer",
+    ]
+    return _prepared(request, argv=argv, backend="gpu", model="bindcraft", settings=str(settings))
+
+
+def _prepare_custom(request: DesignRequest) -> PreparedDesign:
+    template = os.getenv(f"MIRA_DESIGN_{request.library.upper()}_COMMAND") or os.getenv("MIRA_DESIGN_COMMAND")
+    if not template:
+        return _configuration_required(
+            request,
+            f"No real {request.library} design backend is configured.",
+            backend="custom",
+        )
+    return _prepare_template_command(request, template, backend="custom", model=request.library)
+
+
+def _prepare_template_command(request: DesignRequest, template: str, *, backend: str, model: str) -> PreparedDesign:
+    command = template.format(
+        project_id=shlex.quote(request.project_id),
+        run_id=shlex.quote(request.run_id),
+        target_path=shlex.quote(str(request.target_path)),
+        output_dir=shlex.quote(str(request.output_dir)),
+        chain_id=shlex.quote(request.chain_id),
+        num_designs=request.num_designs,
+        prompt=shlex.quote(request.prompt),
+    )
+    parameters = _base_parameters(request, backend=backend, model=model)
+    parameters["shell_command"] = command
+    return PreparedDesign(status="queued", command=command, parameters=parameters)
+
+
+def _prepared(request: DesignRequest, *, argv: list[str], backend: str, model: str, **extra: Any) -> PreparedDesign:
+    parameters = _base_parameters(request, backend=backend, model=model)
+    parameters["argv"] = argv
+    parameters.update({key: value for key, value in extra.items() if value is not None})
+    return PreparedDesign(status="queued", command=shlex.join([str(item) for item in argv]), parameters=parameters)
+
+
+def _configuration_required(request: DesignRequest, message: str, *, backend: str = "local") -> PreparedDesign:
+    return PreparedDesign(
+        status="configuration_required",
+        command=None,
+        parameters=_base_parameters(request, backend=backend, model=request.library),
+        error=message,
+    )
+
+
+def _base_parameters(request: DesignRequest, *, backend: str, model: str) -> dict[str, Any]:
+    return {
+        "backend": backend,
+        "model": model,
+        "target_path": str(request.target_path),
+        "output_dir": str(request.output_dir),
+        "chain_id": request.chain_id,
+        "num_designs": request.num_designs,
+        "temperature": request.temperature,
+        "seed": request.seed,
+        "prompt": request.prompt,
+        "extra_args": request.extra_args,
+    }
+
+
+def _collect_sequences(output_dir: Path) -> list[dict[str, Any]]:
+    sequences: list[dict[str, Any]] = []
+    for path in sorted(output_dir.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in SEQUENCE_SUFFIXES:
+            continue
+        sequences.extend(_parse_fasta(path))
+    return sequences[:1000]
+
+
+def _parse_fasta(path: Path) -> list[dict[str, Any]]:
+    parsed: list[dict[str, Any]] = []
+    header: str | None = None
+    chunks: list[str] = []
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith(">"):
+            if header and chunks:
+                parsed.append(_sequence_record(path, header, "".join(chunks)))
+            header = line[1:].strip()
+            chunks = []
+        else:
+            chunks.append(line)
+    if header and chunks:
+        parsed.append(_sequence_record(path, header, "".join(chunks)))
+    return parsed
+
+
+def _sequence_record(path: Path, header: str, sequence: str) -> dict[str, Any]:
+    return {
+        "id": header.split()[0] if header else path.stem,
+        "header": header,
+        "sequence": sequence,
+        "length": len(sequence.replace("/", "")),
+        "path": str(path),
+        "file": path.name,
+    }
+
+
+def _collect_artifacts(output_dir: Path) -> list[dict[str, Any]]:
+    artifacts = []
+    for path in sorted(output_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() in {".pdb", ".cif", ".mmcif", ".fa", ".fasta", ".json", ".csv", ".txt", ".log"}:
+            artifacts.append({"path": str(path), "file": path.name, "size_bytes": path.stat().st_size})
+    return artifacts[:200]
+
+
+def _env_path(name: str) -> Path | None:
+    value = os.getenv(name)
+    if not value:
+        return None
+    return Path(value).expanduser()
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").lower() in {"1", "true", "yes", "on"}
+
+
+def _tail_text(text: str, limit: int) -> str:
+    return text[-limit:] if len(text) > limit else text

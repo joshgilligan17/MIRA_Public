@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import requests
 
+from structagent.design_adapters import DesignRequest, execute_design, prepare_design
 from structagent.jobs.models import JobConfig
 from structagent.jobs.runner import JobRunner
 from structagent.jobs.store import JobStore
@@ -167,7 +166,7 @@ PROJECT_CHAT_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "properties": {
                 "library": {
                     "type": "string",
-                    "enum": ["bindcraft", "rfdiffusion", "proteinmpnn", "custom"],
+                    "enum": ["bindcraft", "rfdiffusion", "proteinmpnn", "ligandmpnn", "custom"],
                     "default": "custom",
                 },
                 "target_structure_id_or_pdb_id": {
@@ -176,6 +175,16 @@ PROJECT_CHAT_TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
                 "chain_id": {"type": "string", "description": "Optional target chain or receptor chain."},
                 "num_designs": {"type": "integer", "default": 8},
+                "temperature": {"type": "string", "default": "0.1"},
+                "seed": {"type": "integer", "default": 0},
+                "contigs": {
+                    "type": "string",
+                    "description": "RFdiffusion contig map such as '[A1-100/0 80-120]'.",
+                },
+                "hotspot_residues": {
+                    "type": "string",
+                    "description": "RFdiffusion hotspot residues such as '[A45,A67]'.",
+                },
                 "design_prompt": {
                     "type": "string",
                     "description": "Short design objective, constraints, or strategy from the user.",
@@ -219,6 +228,7 @@ def message_may_need_project_tool(message: str) -> bool:
         "rfdiffusion",
         "bindcraft",
         "proteinmpnn",
+        "ligandmpnn",
     )
     return bool(PDB_ID_PATTERN.search(message)) or any(word in lowered for word in action_words)
 
@@ -233,11 +243,23 @@ def fallback_project_tool_calls(message: str) -> list[dict[str, Any]]:
         calls.append({"tool": "analyze_structure", "args": {}, "purpose": "Detected target-analysis request."})
     if any(word in lowered for word in ("batch", "rank", "screen")):
         calls.append({"tool": "start_batch_from_project", "args": {}, "purpose": "Detected batch-screening request."})
-    if any(word in lowered for word in ("design", "generate", "rfdiffusion", "bindcraft", "proteinmpnn")):
+    if any(
+        word in lowered
+        for word in ("design", "generate", "rfdiffusion", "rf diffusion", "bindcraft", "proteinmpnn", "ligandmpnn")
+    ):
+        library = "proteinmpnn"
+        if "bindcraft" in lowered:
+            library = "bindcraft"
+        elif "rfdiffusion" in lowered or "rf diffusion" in lowered:
+            library = "rfdiffusion"
+        elif "ligandmpnn" in lowered or "ligand mpnn" in lowered:
+            library = "ligandmpnn"
+        elif "proteinmpnn" in lowered or "protein mpnn" in lowered:
+            library = "proteinmpnn"
         calls.append(
             {
                 "tool": "generate_design_candidates",
-                "args": {"design_prompt": message},
+                "args": {"library": library, "design_prompt": message},
                 "purpose": "Detected candidate design request.",
             }
         )
@@ -646,7 +668,7 @@ def _start_batch_from_project(
 def _generate_design_candidates(
     runtime: ProjectToolRuntime, project: ProjectRecord, args: dict[str, Any]
 ) -> tuple[ProjectRecord, ToolResult]:
-    library = str(args.get("library") or "custom").strip().lower()
+    library = str(args.get("library") or os.getenv("MIRA_DEFAULT_DESIGN_LIBRARY") or "proteinmpnn").strip().lower()
     target_ref = _resolve_structure(
         runtime.project_store,
         project,
@@ -657,42 +679,71 @@ def _generate_design_candidates(
 
     prompt = str(args.get("design_prompt") or "Generate candidate binders for the selected target.")
     num_designs = max(1, min(int(args.get("num_designs") or 8), int(os.getenv("MIRA_MAX_DESIGNS_PER_CHAT", "64"))))
-    command_template = _design_command_template(library)
     run = runtime.project_store.create_design_run(
         project.id,
         library=library,
         prompt=prompt,
         target_structure_id=str(target_ref["id"]),
         output_dir=None,
-        command=command_template,
-        status="queued" if command_template else "configuration_required",
-        error=None if command_template else _design_configuration_message(library),
+        command=None,
+        num_designs=num_designs,
+        parameters={},
+        status="preparing",
+        error=None,
     )
     output_dir = runtime.project_store.design_run_output_dir(project.id, run.id)
     output_dir.mkdir(parents=True, exist_ok=True)
-    command = _render_design_command(
-        command_template,
-        project=project,
-        run_id=run.id,
+
+    design_request = DesignRequest(
+        library=library,
         target_path=Path(target_ref["path"]),
         output_dir=output_dir,
+        project_id=project.id,
+        run_id=run.id,
+        prompt=prompt,
         chain_id=str(args.get("chain_id") or ""),
         num_designs=num_designs,
-        prompt=prompt,
+        seed=int(args.get("seed") or 0),
+        temperature=str(args.get("temperature") or "0.1"),
+        extra_args={
+            key: value
+            for key, value in args.items()
+            if key
+            not in {
+                "library",
+                "target_structure_id_or_pdb_id",
+                "chain_id",
+                "num_designs",
+                "seed",
+                "temperature",
+                "design_prompt",
+            }
+        },
     )
-    runtime.project_store.update_design_run(project.id, run.id, output_dir=str(output_dir), command=command)
+    prepared = prepare_design(design_request)
+    runtime.project_store.update_design_run(
+        project.id,
+        run.id,
+        output_dir=str(output_dir),
+        command=prepared.command,
+        parameters=prepared.parameters,
+        status=prepared.status,
+        error=prepared.error,
+    )
 
-    if not command:
+    if prepared.status == "configuration_required":
         return (
             project,
             ToolResult(
                 success=True,
-                data=_design_configuration_message(library),
+                data=prepared.error or f"{library} design backend is not configured.",
                 raw={
                     "status": "configuration_required",
                     "design_run_id": run.id,
                     "library": library,
+                    "backend": prepared.parameters.get("backend"),
                     "target_structure_id": target_ref["id"],
+                    "num_designs": num_designs,
                 },
                 tool_name="generate_design_candidates",
             ),
@@ -700,19 +751,18 @@ def _generate_design_candidates(
 
     if runtime.background_tasks is not None:
         runtime.background_tasks.add_task(
-            _execute_design_command,
+            _execute_design_adapter,
             runtime.project_store,
             project.id,
             run.id,
-            command,
             output_dir,
         )
-        data = f"Queued {library} design run {run.id} for {num_designs} candidate(s)."
+        data = f"Queued real {library} design run {run.id} for {num_designs} candidate(s)."
         status = "queued"
     else:
-        _execute_design_command(runtime.project_store, project.id, run.id, command, output_dir)
+        _execute_design_adapter(runtime.project_store, project.id, run.id, output_dir)
         status = runtime.project_store.update_design_run(project.id, run.id).status
-        data = f"Completed {library} design run {run.id}."
+        data = f"Completed real {library} design run {run.id}."
 
     return (
         project,
@@ -723,8 +773,10 @@ def _generate_design_candidates(
                 "status": status,
                 "design_run_id": run.id,
                 "library": library,
+                "backend": prepared.parameters.get("backend"),
                 "target_structure_id": target_ref["id"],
                 "output_dir": str(output_dir),
+                "num_designs": num_designs,
             },
             tool_name="generate_design_candidates",
         ),
@@ -909,80 +961,41 @@ def _download_rcsb_cif(pdb_id: str) -> bytes:
     return response.content
 
 
-def _execute_design_command(
-    project_store: ProjectStore, project_id: str, run_id: str, command: str, output_dir: Path
-) -> None:
+def _execute_design_adapter(project_store: ProjectStore, project_id: str, run_id: str, output_dir: Path) -> None:
     project_store.update_design_run(project_id, run_id, status="running")
     try:
-        completed = subprocess.run(
-            command,
-            shell=True,
-            cwd=output_dir,
-            capture_output=True,
-            text=True,
-            timeout=int(os.getenv("MIRA_DESIGN_TIMEOUT_SECONDS", "3600")),
-            check=False,
-        )
-        if completed.returncode != 0:
-            project_store.update_design_run(
-                project_id,
-                run_id,
-                status="failed",
-                error=(completed.stderr or completed.stdout or f"Exited with {completed.returncode}")[-4000:],
-            )
-            return
+        run = project_store.update_design_run(project_id, run_id)
+        result = execute_design(run.parameters, output_dir)
         generated_ids = []
-        for path in sorted(output_dir.rglob("*")):
+        for path in result.generated_structure_paths:
             if path.suffix.lower() not in SUPPORTED_STRUCTURE_SUFFIXES or not path.is_file():
                 continue
             _, structure = project_store.save_structure(project_id, path.name, path.read_bytes())
             generated_ids.append(structure.id)
+        if not result.success:
+            project_store.update_design_run(
+                project_id,
+                run_id,
+                status=result.status,
+                generated_structure_ids=generated_ids,
+                generated_sequences=result.generated_sequences,
+                artifacts=result.artifacts,
+                logs=result.logs,
+                error=result.error,
+            )
+            return
         project_store.update_design_run(
             project_id,
             run_id,
             status="completed",
             generated_structure_ids=generated_ids,
+            generated_sequences=result.generated_sequences,
+            artifacts=result.artifacts,
+            logs=result.logs,
             error=None,
         )
     except Exception as exc:
         project_store.update_design_run(project_id, run_id, status="failed", error=str(exc))
-
-
-def _design_command_template(library: str) -> str | None:
-    env_name = f"MIRA_DESIGN_{library.upper()}_COMMAND"
-    return os.getenv(env_name) or os.getenv("MIRA_DESIGN_COMMAND")
-
-
-def _render_design_command(
-    template: str | None,
-    *,
-    project: ProjectRecord,
-    run_id: str,
-    target_path: Path,
-    output_dir: Path,
-    chain_id: str,
-    num_designs: int,
-    prompt: str,
-) -> str | None:
-    if not template:
-        return None
-    return template.format(
-        project_id=shlex.quote(project.id),
-        run_id=shlex.quote(run_id),
-        target_path=shlex.quote(str(target_path)),
-        output_dir=shlex.quote(str(output_dir)),
-        chain_id=shlex.quote(chain_id),
-        num_designs=num_designs,
-        prompt=shlex.quote(prompt),
-    )
-
-
-def _design_configuration_message(library: str) -> str:
-    return (
-        f"{library} design is not configured on this server. Set "
-        f"MIRA_DESIGN_{library.upper()}_COMMAND or MIRA_DESIGN_COMMAND with placeholders "
-        "{target_path}, {output_dir}, {num_designs}, {chain_id}, and {prompt}."
-    )
 
 
 def _tool_error(project: ProjectRecord, tool_name: str, message: str) -> tuple[ProjectRecord, ToolResult]:

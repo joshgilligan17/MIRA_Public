@@ -115,18 +115,27 @@ Open `http://127.0.0.1:5173`. Uploaded jobs are stored under `.mira/jobs/`.
 
 The historical `src/structagent/web/` UI remains archived/experimental. The supported dashboard entrypoint is `structagent.api.server:app` plus `webapp/`.
 
-Project chat can route bounded tool calls for structure loading, target analysis, contact/interface checks, batch screening from project structures, and design-library setup. Generated design tools are configured by environment variable:
+Project chat can route bounded tool calls for structure loading, target analysis, contact/interface checks, batch screening from project structures, and real design-model execution. Local Apple Silicon development should start with ProteinMPNN or LigandMPNN sequence design. GPU-only backbones and binder pipelines such as RFdiffusion and BindCraft are queued through the same design-run interface but should run on a CUDA worker.
 
 ```bash
-# Library-specific command wins over the generic command.
-MIRA_DESIGN_BINDCRAFT_COMMAND='bindcraft --target {target_path} --out {output_dir} --n {num_designs}'
-MIRA_DESIGN_RFDIFFUSION_COMMAND='run_rfdiffusion --input {target_path} --output {output_dir}'
-MIRA_DESIGN_PROTEINMPNN_COMMAND='proteinmpnn --pdb {target_path} --out_folder {output_dir}'
+# Local sequence-design adapters.
+MIRA_PROTEINMPNN_REPO=/path/to/ProteinMPNN
+MIRA_PROTEINMPNN_PYTHON=/path/to/proteinmpnn-env/bin/python
+MIRA_LIGANDMPNN_REPO=/path/to/LigandMPNN
+MIRA_LIGANDMPNN_PYTHON=/path/to/ligandmpnn-env/bin/python
+
+# GPU design adapters.
+MIRA_RFDIFFUSION_REPO=/path/to/RFdiffusion
+MIRA_RFDIFFUSION_CONTIGS='[A1-100/0 80-120]'
+MIRA_BINDCRAFT_REPO=/path/to/BindCraft
+MIRA_BINDCRAFT_SETTINGS=/path/to/settings.json
+
+# Admin-supplied fallback command template for custom backends.
 MIRA_DESIGN_COMMAND='custom-design --target {target_path} --out {output_dir}'
 MIRA_DESIGN_TIMEOUT_SECONDS=3600
 ```
 
-Supported placeholders are `{project_id}`, `{run_id}`, `{target_path}`, `{output_dir}`, `{chain_id}`, `{num_designs}`, and `{prompt}`. If no command is configured, chat still creates a design setup record so the workflow is visible without pretending a design library ran.
+Supported custom-command placeholders are `{project_id}`, `{run_id}`, `{target_path}`, `{output_dir}`, `{chain_id}`, `{num_designs}`, and `{prompt}`. If a real backend is not configured, chat creates a `configuration_required` design run instead of pretending generation happened.
 
 ### DigitalOcean Deployment
 
