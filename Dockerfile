@@ -18,7 +18,7 @@ ENV MIRA_JOB_ROOT=/data/mira/jobs \
     PYTHONUNBUFFERED=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential curl \
+    && apt-get install -y --no-install-recommends build-essential curl git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -35,7 +35,7 @@ ARG MIRA_GID=10001
 
 RUN addgroup --system --gid "${MIRA_GID}" mira \
     && adduser --system --uid "${MIRA_UID}" --ingroup mira mira \
-    && mkdir -p /data/mira/jobs /data/mira/projects \
+    && mkdir -p /data/mira/jobs /data/mira/projects /data/mira/models \
     && chown -R mira:mira /data/mira /app
 
 USER mira

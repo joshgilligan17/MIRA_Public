@@ -9,9 +9,11 @@ services:
     environment:
       MIRA_JOB_ROOT: /data/mira/jobs
       MIRA_PROJECT_ROOT: /data/mira/projects
+      MIRA_MODEL_ROOT: /data/mira/models
     volumes:
       - ${MIRA_DATA_DIR:-./data/mira/jobs}:/data/mira/jobs
       - ${MIRA_PROJECT_DIR:-./data/mira/projects}:/data/mira/projects
+      - ${MIRA_MODEL_DIR:-./data/mira/models}:/data/mira/models
     expose:
       - "8000"
 

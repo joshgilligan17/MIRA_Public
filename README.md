@@ -119,6 +119,7 @@ Project chat can route bounded tool calls for structure loading, target analysis
 
 ```bash
 # Local sequence-design adapters.
+MIRA_MODEL_DIR=/data/mira/models
 MIRA_PROTEINMPNN_REPO=/path/to/ProteinMPNN
 MIRA_PROTEINMPNN_PYTHON=/path/to/proteinmpnn-env/bin/python
 MIRA_LIGANDMPNN_REPO=/path/to/LigandMPNN
@@ -136,6 +137,14 @@ MIRA_DESIGN_TIMEOUT_SECONDS=3600
 ```
 
 Supported custom-command placeholders are `{project_id}`, `{run_id}`, `{target_path}`, `{output_dir}`, `{chain_id}`, `{num_designs}`, and `{prompt}`. If a real backend is not configured, chat creates a `configuration_required` design run instead of pretending generation happened.
+
+On the Docker deployment, install the CPU ProteinMPNN backend with:
+
+```bash
+cd /opt/mira
+scripts/install_proteinmpnn_cpu.sh
+docker compose up -d
+```
 
 ### DigitalOcean Deployment
 

@@ -91,12 +91,16 @@ For the first MiniMax-backed deployment, set:
 MIRA_DOMAIN=:80
 MIRA_DATA_DIR=/data/mira/jobs
 MIRA_PROJECT_DIR=/data/mira/projects
+MIRA_MODEL_DIR=/data/mira/models
 MIRA_BASIC_AUTH_USERNAME=mira
 MIRA_BASIC_AUTH_PASSWORD=use-a-long-random-password
 MIRA_REPORT_PROVIDER=minimax
 MIRA_REPORT_MODEL=MiniMax-M2.7
 MIRA_REPORT_BASE_URL=https://api.minimax.io/v1
 MIRA_REPORT_API_KEY=your_minimax_key
+MIRA_DEFAULT_DESIGN_LIBRARY=proteinmpnn
+MIRA_PROTEINMPNN_REPO=/data/mira/models/ProteinMPNN
+MIRA_PROTEINMPNN_PYTHON=/data/mira/models/proteinmpnn-venv/bin/python
 ```
 
 Start the app:
@@ -105,6 +109,13 @@ Start the app:
 docker compose up -d --build
 docker compose ps
 curl http://127.0.0.1/api/health
+```
+
+Install the real CPU ProteinMPNN backend after the first container starts:
+
+```bash
+scripts/install_proteinmpnn_cpu.sh
+docker compose up -d
 ```
 
 Open:
