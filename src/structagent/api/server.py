@@ -25,6 +25,7 @@ from structagent.jobs.runner import PROVIDER_DEFAULTS, JobRunner
 from structagent.jobs.store import JobStore
 from structagent.project_tools import (
     PROJECT_CHAT_TOOL_SCHEMAS,
+    ProjectToolRuntime,
     execute_project_chat_tool,
     fallback_project_tool_calls,
     message_may_need_project_tool,
@@ -244,7 +245,9 @@ def get_project_chat(project_id: str) -> dict[str, object]:
 
 
 @app.post("/api/projects/{project_id}/chat")
-def send_project_chat(project_id: str, payload: ProjectChatRequest) -> dict[str, object]:
+def send_project_chat(
+    project_id: str, payload: ProjectChatRequest, background_tasks: BackgroundTasks
+) -> dict[str, object]:
     project = _get_project_or_404(project_id)
     message = payload.message.strip()
     if not message:
@@ -255,6 +258,7 @@ def send_project_chat(project_id: str, payload: ProjectChatRequest) -> dict[str,
         message,
         payload.selected_job_id,
         payload.selected_structure_id,
+        background_tasks,
     )
     PROJECTS.set_selection(project_id, selected_job_id, selected_structure_id)
     project = PROJECTS.get_project(project_id)
@@ -269,6 +273,7 @@ def send_project_chat(project_id: str, payload: ProjectChatRequest) -> dict[str,
         assistant_content,
         selected_job_id,
         selected_structure_id,
+        tool_events,
     )
     project = PROJECTS.get_project(project_id)
     return {
@@ -276,6 +281,18 @@ def send_project_chat(project_id: str, payload: ProjectChatRequest) -> dict[str,
         "messages": [message.to_dict() for message in project.chat_messages],
         "project": _project_response(project),
     }
+
+
+@app.get("/api/projects/{project_id}/analyses")
+def list_project_analyses(project_id: str) -> dict[str, object]:
+    _get_project_or_404(project_id)
+    return {"analyses": [analysis.to_dict() for analysis in PROJECTS.list_analyses(project_id)]}
+
+
+@app.get("/api/projects/{project_id}/design-runs")
+def list_project_design_runs(project_id: str) -> dict[str, object]:
+    _get_project_or_404(project_id)
+    return {"design_runs": [run.to_dict() for run in PROJECTS.list_design_runs(project_id)]}
 
 
 @app.post("/api/jobs")
@@ -423,8 +440,11 @@ def get_report(job_id: str) -> PlainTextResponse:
 
 def _project_response(project: ProjectRecord) -> dict[str, object]:
     data = project.to_dict()
-    data["target_structure"] = _target_structure_response(project)
-    data["structures"] = [_project_structure_response(project, structure) for structure in project.structures]
+    analyses = PROJECTS.list_analyses(project.id)
+    data["target_structure"] = _target_structure_response(project, analyses)
+    data["structures"] = [_project_structure_response(project, structure, analyses) for structure in project.structures]
+    data["analyses"] = [analysis.to_dict() for analysis in analyses[:20]]
+    data["design_runs"] = [run.to_dict() for run in PROJECTS.list_design_runs(project.id)[:20]]
     data["job_count"] = len(project.job_ids)
     return data
 
@@ -436,6 +456,8 @@ def _viewer_structure(
     profile: str,
     summary: str,
     structure_url: str,
+    metrics: dict[str, object] | None = None,
+    features: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return {
         "id": structure_id,
@@ -445,40 +467,53 @@ def _viewer_structure(
         "error": None,
         "profile": profile,
         "chains": [],
-        "metrics": {},
-        "features": {},
+        "metrics": metrics or {},
+        "features": features or {},
         "warnings": [],
         "summary": summary,
         "structure_url": structure_url,
     }
 
 
-def _target_structure_response(project: ProjectRecord) -> dict[str, object] | None:
+def _target_structure_response(project: ProjectRecord, analyses: list | None = None) -> dict[str, object] | None:
     path = PROJECTS.target_path(project)
     if not path or not path.exists():
         return None
     filename = project.target_original_name or path.name
     pdb_id = Path(filename).stem.upper() or "TARGET"
+    analysis = _latest_analysis_for_structure(analyses or PROJECTS.list_analyses(project.id), "target")
     return _viewer_structure(
         structure_id="target",
         pdb_id=pdb_id,
         filename=filename,
         profile="project_target",
-        summary="Project target structure.",
+        summary=analysis.summary if analysis and analysis.summary else "Project target structure.",
         structure_url=f"/api/projects/{project.id}/target",
+        metrics=analysis.metrics if analysis else None,
+        features=analysis.features if analysis else None,
     )
 
 
-def _project_structure_response(project: ProjectRecord, structure) -> dict[str, object]:
+def _project_structure_response(project: ProjectRecord, structure, analyses: list | None = None) -> dict[str, object]:
     pdb_id = Path(structure.original_name).stem.upper() or structure.id.upper()
+    analysis = _latest_analysis_for_structure(analyses or PROJECTS.list_analyses(project.id), structure.id)
     return _viewer_structure(
         structure_id=structure.id,
         pdb_id=pdb_id,
         filename=structure.original_name,
         profile="project_structure",
-        summary="Project chat structure.",
+        summary=analysis.summary if analysis and analysis.summary else "Project chat structure.",
         structure_url=f"/api/projects/{project.id}/structures/{structure.id}",
+        metrics=analysis.metrics if analysis else None,
+        features=analysis.features if analysis else None,
     )
+
+
+def _latest_analysis_for_structure(analyses: list, structure_id: str):
+    for analysis in analyses:
+        if analysis.selected_structure_id == structure_id and analysis.status == "completed":
+            return analysis
+    return None
 
 
 def _get_project_or_404(project_id: str) -> ProjectRecord:
@@ -493,6 +528,7 @@ def _run_project_chat_tools(
     user_message: str,
     selected_job_id: str | None,
     selected_structure_id: str | None,
+    background_tasks: BackgroundTasks | None = None,
 ) -> tuple[ProjectRecord, str | None, str | None, list[dict[str, object]]]:
     if not message_may_need_project_tool(user_message):
         return project, selected_job_id, selected_structure_id, []
@@ -505,12 +541,19 @@ def _run_project_chat_tools(
     current_project = project
     current_job_id = selected_job_id
     current_structure_id = selected_structure_id
+    runtime = ProjectToolRuntime(
+        project_store=PROJECTS,
+        job_store=STORE,
+        runner=RUNNER,
+        background_tasks=background_tasks,
+        llm_api_key=_resolve_chat_llm_config()[3],
+    )
 
-    for call in tool_calls[:3]:
+    for call in tool_calls[:8]:
         tool_name = str(call.get("tool") or call.get("name") or "")
         args = call.get("args") if isinstance(call.get("args"), dict) else {}
         purpose = str(call.get("purpose") or "")
-        current_project, result = execute_project_chat_tool(PROJECTS, current_project, tool_name, args)
+        current_project, result = execute_project_chat_tool(runtime, current_project, tool_name, args)
         raw = result.raw if isinstance(result.raw, dict) else {}
         current_job_id = raw.get("selected_job_id") if "selected_job_id" in raw else current_job_id
         current_structure_id = (
@@ -556,7 +599,9 @@ def _plan_project_chat_tool_calls(
                     "role": "system",
                     "content": (
                         "You are MIRA's project tool router. Return only a JSON object with a tool_calls array. "
-                        "Use tools only when the user asks to load, open, display, select, or inspect a structure. "
+                        "Use tools when the user asks to load/select a structure, inspect or analyze target "
+                        "structure properties, examine contacts/interfaces, start a batch screen from project "
+                        "structures, or invoke a configured design library. "
                         "Do not answer the biology question here. Do not invent PDB IDs or structure IDs."
                     ),
                 },
@@ -796,6 +841,19 @@ def _deterministic_chat_response(context: dict[str, object]) -> str:
         if raw.get("pdb_id") and raw.get("status") in {"loaded", "selected_existing"}:
             lines.append(f"`{raw.get('pdb_id')}` is now selected in the structure panel.")
             break
+    for item in tool_results:
+        if not isinstance(item, dict) or not item.get("success"):
+            continue
+        raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+        if raw.get("analysis_id"):
+            lines.append(f"Saved analysis `{raw.get('analysis_id')}` for the selected structure.")
+        if raw.get("job_id"):
+            lines.append(
+                f"Started batch job `{raw.get('job_id')}` over {raw.get('structure_count', 'project')} structure(s)."
+            )
+        if raw.get("design_run_id"):
+            status = raw.get("status")
+            lines.append(f"Design run `{raw.get('design_run_id')}` is `{status}` for `{raw.get('library')}`.")
 
     if isinstance(target, dict):
         lines.append(f"The current target is `{target.get('pdb_id')}`.")

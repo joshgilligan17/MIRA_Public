@@ -3,6 +3,7 @@
 from fastapi.testclient import TestClient
 
 from structagent.api import server
+from structagent.jobs import runner as jobs_runner
 from structagent.jobs.runner import JobRunner
 from structagent.jobs.store import JobStore
 from structagent import project_tools
@@ -146,6 +147,7 @@ def test_project_chat_uses_mocked_synthesis_provider(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "PROJECTS", projects)
     monkeypatch.setattr(server, "RUNNER", runner)
     monkeypatch.setattr(server, "create_provider", fake_create_provider)
+    monkeypatch.setattr(jobs_runner, "create_provider", fake_create_provider)
     monkeypatch.setenv("MIRA_REPORT_PROVIDER", "openai")
     monkeypatch.setenv("MIRA_REPORT_MODEL", "fake-model")
     monkeypatch.setenv("MIRA_REPORT_API_KEY", "test-key")
@@ -273,3 +275,156 @@ def test_project_chat_can_pull_up_pdb_id_from_message(tmp_path, monkeypatch):
     structure_file = client.get(structure["structure_url"])
     assert structure_file.status_code == 200
     assert structure_file.content == b"data_1ubq"
+
+
+def test_project_chat_can_analyze_uploaded_structure(tmp_path, monkeypatch):
+    class FakeProvider:
+        def chat(self, messages, model, **kwargs):
+            if "project tool router" in messages[0]["content"]:
+                return ProviderResponse(
+                    content=(
+                        '{"tool_calls":[{"tool":"analyze_structure",'
+                        '"args":{"analyses":["load_structure","bfactors","sasa","charge","ramachandran"],'
+                        '"chain_id":"A"},"purpose":"Analyze selected target"}]}'
+                    ),
+                    input_tokens=20,
+                    output_tokens=22,
+                )
+            prompt = messages[-1]["content"]
+            assert '"analysis_id"' in prompt
+            assert '"mean_bfactor"' in prompt
+            return ProviderResponse(
+                content="I analyzed the selected structure and saved target-analysis evidence.",
+                input_tokens=20,
+                output_tokens=22,
+            )
+
+    def fake_create_provider(provider_name, api_key, base_url=None, timeout=120.0, temperature=0.0):
+        return FakeProvider()
+
+    projects = ProjectStore(tmp_path / "projects")
+    monkeypatch.setattr(server, "PROJECTS", projects)
+    monkeypatch.setattr(server, "create_provider", fake_create_provider)
+    monkeypatch.setenv("MIRA_REPORT_PROVIDER", "openai")
+    monkeypatch.setenv("MIRA_REPORT_MODEL", "fake-model")
+    monkeypatch.setenv("MIRA_REPORT_API_KEY", "test-key")
+    client = TestClient(server.app)
+
+    project_id = client.post("/api/projects", json={"name": "Analyze target"}).json()["project"]["id"]
+    with open("tests/data/local/mini_complex.pdb", "rb") as handle:
+        upload = client.post(
+            f"/api/projects/{project_id}/structures",
+            files={"file": ("mini_complex.pdb", handle, "chemical/x-pdb")},
+        )
+    structure_id = upload.json()["structure"]["id"]
+
+    chat = client.post(
+        f"/api/projects/{project_id}/chat",
+        json={"message": "Analyze the selected target structure.", "selected_structure_id": structure_id},
+    )
+
+    assert chat.status_code == 200
+    body = chat.json()
+    assert body["messages"][-1]["tool_events"][0]["tool"] == "analyze_structure"
+    assert body["project"]["analyses"][0]["kind"] == "structure_analysis"
+    updated_structure = body["project"]["structures"][0]
+    assert updated_structure["metrics"]["mean_bfactor"] is not None
+
+
+def test_project_chat_can_start_batch_from_project_structures(tmp_path, monkeypatch):
+    class FakeProvider:
+        def chat(self, messages, model, **kwargs):
+            if "project tool router" in messages[0]["content"]:
+                return ProviderResponse(
+                    content='{"tool_calls":[{"tool":"start_batch_from_project","args":{"rank_by":"stability"},"purpose":"Screen loaded candidates"}]}',
+                    input_tokens=20,
+                    output_tokens=22,
+                )
+            return ProviderResponse(content="Started the project batch screen.", input_tokens=20, output_tokens=22)
+
+    def fake_create_provider(provider_name, api_key, base_url=None, timeout=120.0, temperature=0.0):
+        return FakeProvider()
+
+    store = JobStore(tmp_path / "jobs")
+    projects = ProjectStore(tmp_path / "projects")
+    runner = JobRunner(store)
+    monkeypatch.setattr(server, "STORE", store)
+    monkeypatch.setattr(server, "PROJECTS", projects)
+    monkeypatch.setattr(server, "RUNNER", runner)
+    monkeypatch.setattr(server, "create_provider", fake_create_provider)
+    monkeypatch.setattr(jobs_runner, "create_provider", fake_create_provider)
+    monkeypatch.setenv("MIRA_REPORT_PROVIDER", "openai")
+    monkeypatch.setenv("MIRA_REPORT_MODEL", "fake-model")
+    monkeypatch.setenv("MIRA_REPORT_API_KEY", "test-key")
+    client = TestClient(server.app)
+
+    project_id = client.post("/api/projects", json={"name": "Batch chat"}).json()["project"]["id"]
+    for filename in ["candidate_a.pdb", "candidate_b.pdb"]:
+        with open("tests/data/local/mini_complex.pdb", "rb") as handle:
+            client.post(
+                f"/api/projects/{project_id}/structures",
+                files={"file": (filename, handle, "chemical/x-pdb")},
+            )
+
+    chat = client.post(
+        f"/api/projects/{project_id}/chat",
+        json={"message": "Run a batch screen over these candidate binders."},
+    )
+
+    assert chat.status_code == 200
+    body = chat.json()
+    event = body["messages"][-1]["tool_events"][0]
+    assert event["tool"] == "start_batch_from_project"
+    assert event["raw"]["structure_count"] == 2
+    job_id = event["raw"]["job_id"]
+    assert client.get(f"/api/jobs/{job_id}").json()["job"]["project_id"] == project_id
+
+
+def test_project_chat_can_create_design_run_setup_record(tmp_path, monkeypatch):
+    class FakeProvider:
+        def chat(self, messages, model, **kwargs):
+            if "project tool router" in messages[0]["content"]:
+                return ProviderResponse(
+                    content=(
+                        '{"tool_calls":[{"tool":"generate_design_candidates",'
+                        '"args":{"library":"bindcraft","num_designs":4,"design_prompt":"make compact binders"},'
+                        '"purpose":"Start design library"}]}'
+                    ),
+                    input_tokens=20,
+                    output_tokens=22,
+                )
+            return ProviderResponse(content="Created the design setup record.", input_tokens=20, output_tokens=22)
+
+    def fake_create_provider(provider_name, api_key, base_url=None, timeout=120.0, temperature=0.0):
+        return FakeProvider()
+
+    projects = ProjectStore(tmp_path / "projects")
+    monkeypatch.setattr(server, "PROJECTS", projects)
+    monkeypatch.setattr(server, "create_provider", fake_create_provider)
+    monkeypatch.delenv("MIRA_DESIGN_BINDCRAFT_COMMAND", raising=False)
+    monkeypatch.delenv("MIRA_DESIGN_COMMAND", raising=False)
+    monkeypatch.setenv("MIRA_REPORT_PROVIDER", "openai")
+    monkeypatch.setenv("MIRA_REPORT_MODEL", "fake-model")
+    monkeypatch.setenv("MIRA_REPORT_API_KEY", "test-key")
+    client = TestClient(server.app)
+
+    project_id = client.post("/api/projects", json={"name": "Design chat"}).json()["project"]["id"]
+    with open("tests/data/local/mini_complex.pdb", "rb") as handle:
+        upload = client.post(
+            f"/api/projects/{project_id}/target",
+            files={"file": ("target.pdb", handle, "chemical/x-pdb")},
+        )
+    assert upload.status_code == 200
+
+    chat = client.post(
+        f"/api/projects/{project_id}/chat",
+        json={"message": "Design four candidate binders with BindCraft."},
+    )
+
+    assert chat.status_code == 200
+    body = chat.json()
+    event = body["messages"][-1]["tool_events"][0]
+    assert event["tool"] == "generate_design_candidates"
+    assert event["raw"]["status"] == "configuration_required"
+    assert body["project"]["design_runs"][0]["library"] == "bindcraft"
+    assert body["project"]["design_runs"][0]["status"] == "configuration_required"

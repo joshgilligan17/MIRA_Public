@@ -919,9 +919,19 @@ function ChatBubble({
   message: ChatMessage;
   onRegionSelect: (region: FocusedRegion) => void;
 }) {
+  const toolEvents = message.tool_events ?? [];
   return (
     <article className={`chat-bubble ${message.role}`}>
       <div className="chat-role">{message.role === "assistant" ? "MIRA" : "You"}</div>
+      {toolEvents.length > 0 && (
+        <div className="tool-events">
+          {toolEvents.map((event, index) => (
+            <span className={event.success ? "tool-event ok" : "tool-event bad"} key={`${event.tool}-${index}`}>
+              {event.success ? "Done" : "Issue"}: {event.tool.replace(/_/g, " ")}
+            </span>
+          ))}
+        </div>
+      )}
       <RenderedMarkdown markdown={message.content} onRegionSelect={onRegionSelect} />
     </article>
   );

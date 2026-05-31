@@ -115,6 +115,19 @@ Open `http://127.0.0.1:5173`. Uploaded jobs are stored under `.mira/jobs/`.
 
 The historical `src/structagent/web/` UI remains archived/experimental. The supported dashboard entrypoint is `structagent.api.server:app` plus `webapp/`.
 
+Project chat can route bounded tool calls for structure loading, target analysis, contact/interface checks, batch screening from project structures, and design-library setup. Generated design tools are configured by environment variable:
+
+```bash
+# Library-specific command wins over the generic command.
+MIRA_DESIGN_BINDCRAFT_COMMAND='bindcraft --target {target_path} --out {output_dir} --n {num_designs}'
+MIRA_DESIGN_RFDIFFUSION_COMMAND='run_rfdiffusion --input {target_path} --output {output_dir}'
+MIRA_DESIGN_PROTEINMPNN_COMMAND='proteinmpnn --pdb {target_path} --out_folder {output_dir}'
+MIRA_DESIGN_COMMAND='custom-design --target {target_path} --out {output_dir}'
+MIRA_DESIGN_TIMEOUT_SECONDS=3600
+```
+
+Supported placeholders are `{project_id}`, `{run_id}`, `{target_path}`, `{output_dir}`, `{chain_id}`, `{num_designs}`, and `{prompt}`. If no command is configured, chat still creates a design setup record so the workflow is visible without pretending a design library ran.
+
 ### DigitalOcean Deployment
 
 The supported hosted prototype path is a Dockerized FastAPI + React app on a DigitalOcean Droplet, with MiniMax synthesis for now and Cloudflare Workers AI planned as the next provider.

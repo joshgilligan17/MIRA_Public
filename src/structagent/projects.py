@@ -37,6 +37,95 @@ class ProjectStructure:
 
 
 @dataclass
+class ProjectAnalysis:
+    """Persisted analysis produced by project chat tools."""
+
+    id: str
+    kind: str
+    query: str
+    status: str
+    created_at: str
+    updated_at: str
+    selected_job_id: str | None = None
+    selected_structure_id: str | None = None
+    tool_events: list[dict[str, Any]] = field(default_factory=list)
+    metrics: dict[str, Any] = field(default_factory=dict)
+    features: dict[str, Any] = field(default_factory=dict)
+    summary: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return _json_safe(
+            {
+                "id": self.id,
+                "kind": self.kind,
+                "query": self.query,
+                "status": self.status,
+                "created_at": self.created_at,
+                "updated_at": self.updated_at,
+                "selected_job_id": self.selected_job_id,
+                "selected_structure_id": self.selected_structure_id,
+                "tool_events": self.tool_events,
+                "metrics": self.metrics,
+                "features": self.features,
+                "summary": self.summary,
+            }
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ProjectAnalysis":
+        return cls(
+            id=data["id"],
+            kind=data.get("kind") or "analysis",
+            query=data.get("query") or "",
+            status=data.get("status") or "completed",
+            created_at=data["created_at"],
+            updated_at=data.get("updated_at") or data["created_at"],
+            selected_job_id=data.get("selected_job_id"),
+            selected_structure_id=data.get("selected_structure_id"),
+            tool_events=data.get("tool_events") or [],
+            metrics=data.get("metrics") or {},
+            features=data.get("features") or {},
+            summary=data.get("summary") or "",
+        )
+
+
+@dataclass
+class ProjectDesignRun:
+    """Persisted generative design-library invocation."""
+
+    id: str
+    library: str
+    prompt: str
+    status: str
+    created_at: str
+    updated_at: str
+    target_structure_id: str | None = None
+    output_dir: str | None = None
+    command: str | None = None
+    generated_structure_ids: list[str] = field(default_factory=list)
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ProjectDesignRun":
+        return cls(
+            id=data["id"],
+            library=data.get("library") or "unknown",
+            prompt=data.get("prompt") or "",
+            status=data.get("status") or "queued",
+            created_at=data["created_at"],
+            updated_at=data.get("updated_at") or data["created_at"],
+            target_structure_id=data.get("target_structure_id"),
+            output_dir=data.get("output_dir"),
+            command=data.get("command"),
+            generated_structure_ids=data.get("generated_structure_ids") or [],
+            error=data.get("error"),
+        )
+
+
+@dataclass
 class ChatMessage:
     """Persisted project chat message."""
 
@@ -46,9 +135,20 @@ class ChatMessage:
     created_at: str
     selected_job_id: str | None = None
     selected_structure_id: str | None = None
+    tool_events: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return _json_safe(
+            {
+                "id": self.id,
+                "role": self.role,
+                "content": self.content,
+                "created_at": self.created_at,
+                "selected_job_id": self.selected_job_id,
+                "selected_structure_id": self.selected_structure_id,
+                "tool_events": self.tool_events,
+            }
+        )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChatMessage":
@@ -59,6 +159,7 @@ class ChatMessage:
             created_at=data["created_at"],
             selected_job_id=data.get("selected_job_id"),
             selected_structure_id=data.get("selected_structure_id"),
+            tool_events=data.get("tool_events") or [],
         )
 
 
@@ -76,6 +177,8 @@ class ProjectRecord:
     target_uploaded_at: str | None = None
     structures: list[ProjectStructure] = field(default_factory=list)
     job_ids: list[str] = field(default_factory=list)
+    analysis_ids: list[str] = field(default_factory=list)
+    design_run_ids: list[str] = field(default_factory=list)
     chat_messages: list[ChatMessage] = field(default_factory=list)
     selected_job_id: str | None = None
     selected_structure_id: str | None = None
@@ -92,6 +195,8 @@ class ProjectRecord:
             "target_uploaded_at": self.target_uploaded_at,
             "structures": [structure.to_dict() for structure in self.structures],
             "job_ids": self.job_ids,
+            "analysis_ids": self.analysis_ids,
+            "design_run_ids": self.design_run_ids,
             "chat_messages": [message.to_dict() for message in self.chat_messages],
             "selected_job_id": self.selected_job_id,
             "selected_structure_id": self.selected_structure_id,
@@ -110,6 +215,8 @@ class ProjectRecord:
             target_uploaded_at=data.get("target_uploaded_at"),
             structures=[ProjectStructure.from_dict(item) for item in data.get("structures", [])],
             job_ids=data.get("job_ids") or [],
+            analysis_ids=data.get("analysis_ids") or [],
+            design_run_ids=data.get("design_run_ids") or [],
             chat_messages=[ChatMessage.from_dict(item) for item in data.get("chat_messages", [])],
             selected_job_id=data.get("selected_job_id"),
             selected_structure_id=data.get("selected_structure_id"),
@@ -220,6 +327,7 @@ class ProjectStore:
         content: str,
         selected_job_id: str | None = None,
         selected_structure_id: str | None = None,
+        tool_events: list[dict[str, Any]] | None = None,
     ) -> ChatMessage:
         project = self.get_project(project_id)
         message = ChatMessage(
@@ -229,12 +337,108 @@ class ProjectStore:
             created_at=_now(),
             selected_job_id=selected_job_id,
             selected_structure_id=selected_structure_id,
+            tool_events=tool_events or [],
         )
         project.chat_messages.append(message)
         project.selected_job_id = selected_job_id
         project.selected_structure_id = selected_structure_id
         self.write_project(project)
         return message
+
+    def save_analysis(
+        self,
+        project_id: str,
+        *,
+        kind: str,
+        query: str,
+        status: str,
+        selected_job_id: str | None = None,
+        selected_structure_id: str | None = None,
+        tool_events: list[dict[str, Any]] | None = None,
+        metrics: dict[str, Any] | None = None,
+        features: dict[str, Any] | None = None,
+        summary: str = "",
+    ) -> ProjectAnalysis:
+        project = self.get_project(project_id)
+        now = _now()
+        analysis = ProjectAnalysis(
+            id=uuid4().hex[:12],
+            kind=kind,
+            query=query,
+            status=status,
+            created_at=now,
+            updated_at=now,
+            selected_job_id=selected_job_id,
+            selected_structure_id=selected_structure_id,
+            tool_events=tool_events or [],
+            metrics=metrics or {},
+            features=features or {},
+            summary=summary,
+        )
+        _write_json(self.analysis_path(project_id, analysis.id), analysis.to_dict())
+        if analysis.id not in project.analysis_ids:
+            project.analysis_ids.append(analysis.id)
+        self.write_project(project)
+        return analysis
+
+    def list_analyses(self, project_id: str) -> list[ProjectAnalysis]:
+        analyses = []
+        for path in sorted(self.analysis_dir(project_id).glob("*.json")):
+            try:
+                analyses.append(ProjectAnalysis.from_dict(json.loads(path.read_text())))
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                continue
+        return sorted(analyses, key=lambda analysis: analysis.updated_at, reverse=True)
+
+    def create_design_run(
+        self,
+        project_id: str,
+        *,
+        library: str,
+        prompt: str,
+        target_structure_id: str | None,
+        output_dir: str | None,
+        command: str | None,
+        status: str = "queued",
+        error: str | None = None,
+    ) -> ProjectDesignRun:
+        project = self.get_project(project_id)
+        now = _now()
+        run = ProjectDesignRun(
+            id=uuid4().hex[:12],
+            library=library,
+            prompt=prompt,
+            status=status,
+            created_at=now,
+            updated_at=now,
+            target_structure_id=target_structure_id,
+            output_dir=output_dir,
+            command=command,
+            error=error,
+        )
+        _write_json(self.design_run_path(project_id, run.id), run.to_dict())
+        if run.id not in project.design_run_ids:
+            project.design_run_ids.append(run.id)
+        self.write_project(project)
+        return run
+
+    def update_design_run(self, project_id: str, run_id: str, **updates: Any) -> ProjectDesignRun:
+        run = ProjectDesignRun.from_dict(json.loads(self.design_run_path(project_id, run_id).read_text()))
+        for key, value in updates.items():
+            if hasattr(run, key):
+                setattr(run, key, value)
+        run.updated_at = _now()
+        _write_json(self.design_run_path(project_id, run.id), run.to_dict())
+        return run
+
+    def list_design_runs(self, project_id: str) -> list[ProjectDesignRun]:
+        runs = []
+        for path in sorted(self.design_runs_dir(project_id).glob("*.json")):
+            try:
+                runs.append(ProjectDesignRun.from_dict(json.loads(path.read_text())))
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                continue
+        return sorted(runs, key=lambda run: run.updated_at, reverse=True)
 
     def project_dir(self, project_id: str) -> Path:
         return self.root / project_id
@@ -244,6 +448,24 @@ class ProjectStore:
 
     def structure_dir(self, project_id: str) -> Path:
         return self.project_dir(project_id) / "structures"
+
+    def analysis_dir(self, project_id: str) -> Path:
+        return self.project_dir(project_id) / "analyses"
+
+    def analysis_path(self, project_id: str, analysis_id: str) -> Path:
+        return self.analysis_dir(project_id) / f"{analysis_id}.json"
+
+    def designs_dir(self, project_id: str) -> Path:
+        return self.project_dir(project_id) / "designs"
+
+    def design_run_output_dir(self, project_id: str, run_id: str) -> Path:
+        return self.designs_dir(project_id) / run_id / "outputs"
+
+    def design_runs_dir(self, project_id: str) -> Path:
+        return self.designs_dir(project_id) / "runs"
+
+    def design_run_path(self, project_id: str, run_id: str) -> Path:
+        return self.design_runs_dir(project_id) / f"{run_id}.json"
 
     def target_path(self, project: ProjectRecord) -> Path | None:
         if not project.target_file:

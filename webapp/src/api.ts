@@ -85,6 +85,45 @@ export type ChatMessage = {
   created_at: string;
   selected_job_id?: string | null;
   selected_structure_id?: string | null;
+  tool_events?: ToolEvent[];
+};
+
+export type ToolEvent = {
+  tool: string;
+  purpose?: string;
+  success: boolean;
+  data?: string;
+  error?: string | null;
+  raw?: Record<string, any>;
+};
+
+export type ProjectAnalysis = {
+  id: string;
+  kind: string;
+  query: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  selected_job_id?: string | null;
+  selected_structure_id?: string | null;
+  tool_events: ToolEvent[];
+  metrics: Record<string, any>;
+  features: Record<string, any[]>;
+  summary: string;
+};
+
+export type ProjectDesignRun = {
+  id: string;
+  library: string;
+  prompt: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  target_structure_id?: string | null;
+  output_dir?: string | null;
+  command?: string | null;
+  generated_structure_ids: string[];
+  error?: string | null;
 };
 
 export type Project = {
@@ -99,6 +138,10 @@ export type Project = {
   target_structure?: StructureResult | null;
   structures?: StructureResult[];
   job_ids: string[];
+  analysis_ids?: string[];
+  design_run_ids?: string[];
+  analyses?: ProjectAnalysis[];
+  design_runs?: ProjectDesignRun[];
   job_count: number;
   chat_messages: ChatMessage[];
   selected_job_id?: string | null;

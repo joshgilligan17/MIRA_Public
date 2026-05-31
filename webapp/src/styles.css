@@ -524,6 +524,31 @@ textarea {
   text-transform: uppercase;
 }
 
+.tool-events {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.tool-event {
+  border: 1px solid #d9e4ef;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 3px 7px;
+}
+
+.tool-event.ok {
+  border-color: rgba(47, 125, 85, 0.28);
+  color: #2f7d55;
+}
+
+.tool-event.bad {
+  border-color: rgba(210, 79, 69, 0.28);
+  color: #b83f38;
+}
+
 .composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
