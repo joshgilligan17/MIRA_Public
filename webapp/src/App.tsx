@@ -11,6 +11,7 @@ import {
   Play,
   RefreshCw,
   SlidersHorizontal,
+  Trash2,
   Upload,
 } from "lucide-react";
 import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -38,6 +39,7 @@ import {
   SynthesisStatus,
   createProject,
   createProjectJob,
+  deleteProject,
   getHealth,
   getJob,
   getProfiles,
@@ -215,6 +217,7 @@ function ProjectsPage({
   const [name, setName] = useState("New MIRA project");
   const [description, setDescription] = useState("");
   const [creating, setCreating] = useState(false);
+  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   async function onCreate(event: FormEvent<HTMLFormElement>) {
@@ -230,6 +233,26 @@ function ProjectsPage({
       setNotice(error instanceof Error ? error.message : "Project creation failed.");
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function onDeleteProject(project: Project) {
+    const confirmed = window.confirm(`Delete "${project.name}" and its uploaded project files?`);
+    if (!confirmed) {
+      return;
+    }
+    setDeletingProjectId(project.id);
+    setNotice(null);
+    try {
+      await deleteProject(project.id);
+      if (window.localStorage.getItem("mira:lastProjectId") === project.id) {
+        window.localStorage.removeItem("mira:lastProjectId");
+      }
+      await refreshProjects();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Project deletion failed.");
+    } finally {
+      setDeletingProjectId(null);
     }
   }
 
@@ -256,16 +279,29 @@ function ProjectsPage({
       {notice && <p className="notice">{notice}</p>}
       <section className="project-grid">
         {projects.map((project) => (
-          <Link className="project-card" to={`/projects/${project.id}/chat`} key={project.id}>
-            <div>
-              <h2>{project.name}</h2>
-              <p>{project.description || "Structure reasoning workspace"}</p>
+          <article className="project-card" key={project.id}>
+            <Link className="project-card-main" to={`/projects/${project.id}/chat`}>
+              <div>
+                <h2>{project.name}</h2>
+                <p>{project.description || "Structure reasoning workspace"}</p>
+              </div>
+              <div className="project-card-meta">
+                <span>{project.target_original_name || "No target"}</span>
+                <span>{project.job_count} batch runs</span>
+              </div>
+            </Link>
+            <div className="project-card-actions">
+              <button
+                className="icon-button danger"
+                type="button"
+                onClick={() => void onDeleteProject(project)}
+                disabled={deletingProjectId === project.id}
+                title={`Delete ${project.name}`}
+              >
+                {deletingProjectId === project.id ? <Loader2 size={17} className="spin" /> : <Trash2 size={17} />}
+              </button>
             </div>
-            <div className="project-card-meta">
-              <span>{project.target_original_name || "No target"}</span>
-              <span>{project.job_count} batch runs</span>
-            </div>
-          </Link>
+          </article>
         ))}
         {!projects.length && <div className="empty-state">Create a project to begin.</div>}
       </section>

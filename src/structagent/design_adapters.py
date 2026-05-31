@@ -8,6 +8,7 @@ which real backend is missing.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -73,60 +74,47 @@ def execute_design(parameters: dict[str, Any], output_dir: Path) -> DesignExecut
     """Run a prepared design command and collect generated artifacts."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    argv = parameters.get("argv")
-    shell_command = parameters.get("shell_command")
     timeout = int(os.getenv("MIRA_DESIGN_TIMEOUT_SECONDS", "3600"))
-    try:
-        if isinstance(argv, list) and argv:
-            completed = subprocess.run(
-                [str(item) for item in argv],
-                cwd=output_dir,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
-        elif shell_command:
-            completed = subprocess.run(
-                str(shell_command),
-                shell=True,
-                cwd=output_dir,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
-        else:
-            return DesignExecution(
-                success=False,
-                status="configuration_required",
-                error="No executable design command is configured.",
-            )
-    except Exception as exc:
-        return DesignExecution(success=False, status="failed", error=str(exc))
+    attempt_logs: list[str] = []
+    last_error = ""
+    for index, attempt in enumerate(_execution_attempts(parameters), start=1):
+        label = str(attempt.get("label") or f"attempt_{index}")
+        try:
+            completed = _run_design_attempt(attempt, output_dir, timeout)
+        except ValueError as exc:
+            return DesignExecution(success=False, status="configuration_required", error=str(exc))
+        except Exception as exc:
+            last_error = str(exc)
+            attempt_logs.append(f"[{label}] {last_error}")
+            continue
 
-    logs = _tail_text("\n".join(part for part in [completed.stdout, completed.stderr] if part), 12000)
-    if completed.returncode != 0:
+        command = _attempt_command(attempt)
+        logs = _tail_text("\n".join(part for part in [completed.stdout, completed.stderr] if part), 12000)
+        attempt_logs.append(f"[{label}] {command}\n{logs}".strip())
+        if completed.returncode != 0:
+            last_error = (completed.stderr or completed.stdout or f"Exited with {completed.returncode}")[-4000:]
+            continue
+
+        structure_paths = [
+            path
+            for path in sorted(output_dir.rglob("*"))
+            if path.is_file() and path.suffix.lower() in SUPPORTED_DESIGN_SUFFIXES
+        ]
         return DesignExecution(
-            success=False,
-            status="failed",
-            logs=logs,
-            error=(completed.stderr or completed.stdout or f"Exited with {completed.returncode}")[-4000:],
+            success=True,
+            status="completed",
+            generated_structure_paths=structure_paths,
+            generated_sequences=_collect_sequences(output_dir),
             artifacts=_collect_artifacts(output_dir),
+            logs=_tail_text("\n\n".join(attempt_logs), 12000),
         )
 
-    structure_paths = [
-        path
-        for path in sorted(output_dir.rglob("*"))
-        if path.is_file() and path.suffix.lower() in SUPPORTED_DESIGN_SUFFIXES
-    ]
     return DesignExecution(
-        success=True,
-        status="completed",
-        generated_structure_paths=structure_paths,
-        generated_sequences=_collect_sequences(output_dir),
+        success=False,
+        status="failed",
         artifacts=_collect_artifacts(output_dir),
-        logs=logs,
+        logs=_tail_text("\n\n".join(attempt_logs), 12000),
+        error=(last_error or "Design command failed after all retry attempts.")[-4000:],
     )
 
 
@@ -139,11 +127,13 @@ def _prepare_proteinmpnn(request: DesignRequest) -> PreparedDesign:
             "ProteinMPNN is not installed. Set MIRA_PROTEINMPNN_REPO to the official ProteinMPNN checkout.",
         )
 
+    target_path, target_metadata = _proteinmpnn_input_path(request)
+    chain_string = _proteinmpnn_chain_string(request.chain_id)
     argv = [
         os.getenv("MIRA_PROTEINMPNN_PYTHON") or sys.executable,
         str(script),
         "--pdb_path",
-        str(request.target_path),
+        str(target_path),
         "--out_folder",
         str(request.output_dir),
         "--num_seq_per_target",
@@ -155,8 +145,8 @@ def _prepare_proteinmpnn(request: DesignRequest) -> PreparedDesign:
         "--seed",
         str(request.seed),
     ]
-    if request.chain_id:
-        argv.extend(["--pdb_path_chains", request.chain_id.replace(",", " ")])
+    if chain_string:
+        argv.extend(["--pdb_path_chains", chain_string])
     weights = _env_path("MIRA_PROTEINMPNN_WEIGHTS")
     if weights:
         argv.extend(["--path_to_model_weights", str(weights)])
@@ -166,7 +156,21 @@ def _prepare_proteinmpnn(request: DesignRequest) -> PreparedDesign:
     if _truthy(os.getenv("MIRA_PROTEINMPNN_SOLUBLE")):
         argv.append("--use_soluble_model")
 
-    return _prepared(request, argv=argv, backend="local", model="proteinmpnn")
+    fallbacks = []
+    if chain_string and not _truthy(os.getenv("MIRA_PROTEINMPNN_DISABLE_FALLBACKS")):
+        fallbacks.append(
+            {"label": "retry_without_chain_selection", "argv": _argv_without_flag(argv, "--pdb_path_chains")}
+        )
+
+    return _prepared(
+        request,
+        argv=argv,
+        backend="local",
+        model="proteinmpnn",
+        target_path=str(target_path),
+        fallbacks=fallbacks,
+        **target_metadata,
+    )
 
 
 def _prepare_ligandmpnn(request: DesignRequest) -> PreparedDesign:
@@ -294,6 +298,46 @@ def _prepare_template_command(request: DesignRequest, template: str, *, backend:
     return PreparedDesign(status="queued", command=command, parameters=parameters)
 
 
+def _execution_attempts(parameters: dict[str, Any]) -> list[dict[str, Any]]:
+    attempts = [parameters]
+    fallbacks = parameters.get("fallbacks") or []
+    if isinstance(fallbacks, list):
+        attempts.extend(item for item in fallbacks if isinstance(item, dict))
+    return attempts
+
+
+def _run_design_attempt(attempt: dict[str, Any], output_dir: Path, timeout: int) -> subprocess.CompletedProcess[str]:
+    argv = attempt.get("argv")
+    shell_command = attempt.get("shell_command")
+    if isinstance(argv, list) and argv:
+        return subprocess.run(
+            [str(item) for item in argv],
+            cwd=output_dir,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    if shell_command:
+        return subprocess.run(
+            str(shell_command),
+            shell=True,
+            cwd=output_dir,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    raise ValueError("No executable design command is configured.")
+
+
+def _attempt_command(attempt: dict[str, Any]) -> str:
+    argv = attempt.get("argv")
+    if isinstance(argv, list) and argv:
+        return shlex.join([str(item) for item in argv])
+    return str(attempt.get("shell_command") or "")
+
+
 def _prepared(request: DesignRequest, *, argv: list[str], backend: str, model: str, **extra: Any) -> PreparedDesign:
     parameters = _base_parameters(request, backend=backend, model=model)
     parameters["argv"] = argv
@@ -323,6 +367,59 @@ def _base_parameters(request: DesignRequest, *, backend: str, model: str) -> dic
         "prompt": request.prompt,
         "extra_args": request.extra_args,
     }
+
+
+def _proteinmpnn_input_path(request: DesignRequest) -> tuple[Path, dict[str, Any]]:
+    if request.target_path.suffix.lower() not in {".cif", ".mmcif"}:
+        return request.target_path, {}
+    prepared_path = request.output_dir / "proteinmpnn_input.pdb"
+    try:
+        from Bio.PDB import MMCIFParser, PDBIO
+
+        structure = MMCIFParser(QUIET=True).get_structure(request.target_path.stem, str(request.target_path))
+        writer = PDBIO()
+        writer.set_structure(structure)
+        writer.save(str(prepared_path))
+    except Exception as exc:
+        return request.target_path, {
+            "source_target_path": str(request.target_path),
+            "target_conversion_error": str(exc),
+        }
+    return (
+        prepared_path,
+        {
+            "source_target_path": str(request.target_path),
+            "prepared_target_path": str(prepared_path),
+            "target_conversion": "mmcif_to_pdb",
+        },
+    )
+
+
+def _proteinmpnn_chain_string(chain_id: str) -> str:
+    raw = str(chain_id or "").strip()
+    if not raw:
+        return ""
+    tokens = [
+        token.strip(" .:-_[]{}")
+        for token in re.split(r"[\s,;/]+", raw.replace("(", " ").replace(")", " "))
+        if token and token.lower() not in {"chain", "chains", "and", "or"}
+    ]
+    tokens = [token for token in tokens if token]
+    return " ".join(tokens)
+
+
+def _argv_without_flag(argv: list[str], flag: str) -> list[str]:
+    filtered = []
+    skip_next = False
+    for item in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if item == flag:
+            skip_next = True
+            continue
+        filtered.append(item)
+    return filtered
 
 
 def _collect_sequences(output_dir: Path) -> list[dict[str, Any]]:

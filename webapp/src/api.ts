@@ -236,6 +236,12 @@ export async function updateProject(projectId: string, updates: Partial<Project>
   return data.project;
 }
 
+export async function deleteProject(projectId: string): Promise<void> {
+  await apiJson<{ deleted: boolean; project_id: string }>(`/api/projects/${projectId}`, {
+    method: "DELETE",
+  });
+}
+
 export async function uploadProjectTarget(projectId: string, file: File): Promise<Project> {
   const formData = new FormData();
   formData.append("file", file);

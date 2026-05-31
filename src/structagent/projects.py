@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -297,6 +298,15 @@ class ProjectStore:
             if hasattr(project, key):
                 setattr(project, key, value)
         self.write_project(project)
+        return project
+
+    def delete_project(self, project_id: str) -> ProjectRecord:
+        project = self.get_project(project_id)
+        project_dir = self.project_dir(project_id).resolve()
+        root = self.root.resolve()
+        if project_dir == root or root not in project_dir.parents:
+            raise ValueError(f"Refusing to delete unsafe project path: {project_id}")
+        shutil.rmtree(project_dir)
         return project
 
     def save_target(self, project_id: str, filename: str, content: bytes) -> ProjectRecord:

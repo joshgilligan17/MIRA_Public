@@ -121,6 +121,13 @@ def test_project_crud_target_upload_and_project_job(tmp_path, monkeypatch):
     assert cleared.json()["project"]["selected_job_id"] is None
     assert cleared.json()["project"]["selected_structure_id"] == structure_id
 
+    deleted = client.delete(f"/api/projects/{project_id}")
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
+    assert not projects.project_dir(project_id).exists()
+    assert client.get(f"/api/projects/{project_id}").status_code == 404
+    assert all(item["id"] != project_id for item in client.get("/api/projects").json()["projects"])
+
 
 def test_project_chat_uses_mocked_synthesis_provider(tmp_path, monkeypatch):
     class FakeProvider:
@@ -528,3 +535,104 @@ print(f"generated {args.num_seq_per_target} ProteinMPNN sequences")
     assert run["parameters"]["model"] == "proteinmpnn"
     assert len(run["generated_sequences"]) == 5
     assert run["generated_sequences"][0]["sequence"] == "ACDEFGHIKLMNPQRSTVWY"
+
+
+def test_project_chat_proteinmpnn_converts_cif_and_retries_without_chain(tmp_path, monkeypatch):
+    fake_repo = tmp_path / "ProteinMPNN"
+    fake_repo.mkdir()
+    (fake_repo / "protein_mpnn_run.py").write_text(
+        """
+import argparse
+import sys
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--pdb_path")
+parser.add_argument("--out_folder")
+parser.add_argument("--num_seq_per_target", type=int)
+parser.add_argument("--sampling_temp")
+parser.add_argument("--batch_size")
+parser.add_argument("--seed")
+parser.add_argument("--pdb_path_chains", default="")
+args, _ = parser.parse_known_args()
+
+if Path(args.pdb_path).suffix.lower() != ".pdb":
+    print("ProteinMPNN parser expected a PDB input", file=sys.stderr)
+    raise SystemExit(12)
+if args.pdb_path_chains:
+    print("requested chain could not be parsed", file=sys.stderr)
+    raise SystemExit(13)
+
+seq_dir = Path(args.out_folder) / "seqs"
+seq_dir.mkdir(parents=True, exist_ok=True)
+stem = Path(args.pdb_path).stem
+with (seq_dir / f"{stem}.fa").open("w") as handle:
+    handle.write(f">{stem}, score=1.0, global_score=1.0\\n")
+    handle.write("TARGETSEQ\\n")
+    for index in range(args.num_seq_per_target):
+        handle.write(f">fallback_design_{index}|temp={args.sampling_temp}\\n")
+        handle.write("YYYYYVVVVV\\n")
+print(f"generated {args.num_seq_per_target} fallback ProteinMPNN sequences")
+""".strip()
+    )
+
+    class FakeProvider:
+        def chat(self, messages, model, **kwargs):
+            if "project tool router" in messages[0]["content"]:
+                return ProviderResponse(
+                    content=(
+                        '{"tool_calls":[{"tool":"generate_design_candidates",'
+                        '"args":{"library":"proteinmpnn","num_designs":3,"chain_id":"chain A.",'
+                        '"temperature":"0.1","design_prompt":"redesign chain A"},'
+                        '"purpose":"Run local sequence design"}]}'
+                    ),
+                    input_tokens=20,
+                    output_tokens=22,
+                )
+            return ProviderResponse(content="Started ProteinMPNN retry design.", input_tokens=20, output_tokens=22)
+
+    def fake_create_provider(provider_name, api_key, base_url=None, timeout=120.0, temperature=0.0):
+        return FakeProvider()
+
+    from Bio.PDB import MMCIFIO, PDBParser
+
+    cif_path = tmp_path / "target.cif"
+    structure = PDBParser(QUIET=True).get_structure("mini", "tests/data/local/mini_complex.pdb")
+    writer = MMCIFIO()
+    writer.set_structure(structure)
+    writer.save(str(cif_path))
+
+    projects = ProjectStore(tmp_path / "projects")
+    monkeypatch.setattr(server, "PROJECTS", projects)
+    monkeypatch.setattr(server, "create_provider", fake_create_provider)
+    monkeypatch.setenv("MIRA_PROTEINMPNN_REPO", str(fake_repo))
+    monkeypatch.setenv("MIRA_PROTEINMPNN_PYTHON", sys.executable)
+    monkeypatch.delenv("MIRA_PROTEINMPNN_DISABLE_FALLBACKS", raising=False)
+    monkeypatch.setenv("MIRA_REPORT_PROVIDER", "openai")
+    monkeypatch.setenv("MIRA_REPORT_MODEL", "fake-model")
+    monkeypatch.setenv("MIRA_REPORT_API_KEY", "test-key")
+    client = TestClient(server.app)
+
+    project_id = client.post("/api/projects", json={"name": "ProteinMPNN CIF retry"}).json()["project"]["id"]
+    with cif_path.open("rb") as handle:
+        upload = client.post(
+            f"/api/projects/{project_id}/target",
+            files={"file": ("target.cif", handle, "chemical/x-cif")},
+        )
+    assert upload.status_code == 200
+
+    chat = client.post(
+        f"/api/projects/{project_id}/chat",
+        json={"message": "Redesign chain A with ProteinMPNN."},
+    )
+
+    assert chat.status_code == 200
+    project = client.get(f"/api/projects/{project_id}").json()["project"]
+    run = project["design_runs"][0]
+    assert run["status"] == "completed"
+    assert run["parameters"]["target_conversion"] == "mmcif_to_pdb"
+    assert run["parameters"]["target_path"].endswith("proteinmpnn_input.pdb")
+    assert len(run["parameters"]["fallbacks"]) == 1
+    assert "retry_without_chain_selection" in run["logs"]
+    assert len(run["generated_sequences"]) == 3
+    assert run["generated_sequences"][0]["sequence"] == "YYYYYVVVVV"

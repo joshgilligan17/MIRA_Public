@@ -128,6 +128,16 @@ def update_project(project_id: str, payload: ProjectUpdateRequest) -> dict[str, 
     return {"project": _project_response(project)}
 
 
+@app.delete("/api/projects/{project_id}")
+def delete_project(project_id: str) -> dict[str, object]:
+    _get_project_or_404(project_id)
+    try:
+        deleted = PROJECTS.delete_project(project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"deleted": True, "project_id": deleted.id}
+
+
 @app.post("/api/projects/{project_id}/target")
 async def upload_project_target(
     project_id: str,
