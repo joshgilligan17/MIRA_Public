@@ -463,6 +463,8 @@ seq_dir = Path(args.out_folder) / "seqs"
 seq_dir.mkdir(parents=True, exist_ok=True)
 stem = Path(args.pdb_path).stem
 with (seq_dir / f"{stem}.fa").open("w") as handle:
+    handle.write(f">{stem}, score=1.0, global_score=1.0\\n")
+    handle.write("TARGETSEQ\\n")
     for index in range(args.num_seq_per_target):
         handle.write(f">design_{index}|temp={args.sampling_temp}|chains={args.pdb_path_chains}\\n")
         handle.write("ACDEFGHIKLMNPQRSTVWY\\n")

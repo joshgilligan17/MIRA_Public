@@ -348,14 +348,21 @@ def _parse_fasta(path: Path) -> list[dict[str, Any]]:
             continue
         if line.startswith(">"):
             if header and chunks:
-                parsed.append(_sequence_record(path, header, "".join(chunks)))
+                if not _is_source_sequence(path, header):
+                    parsed.append(_sequence_record(path, header, "".join(chunks)))
             header = line[1:].strip()
             chunks = []
         else:
             chunks.append(line)
     if header and chunks:
-        parsed.append(_sequence_record(path, header, "".join(chunks)))
+        if not _is_source_sequence(path, header):
+            parsed.append(_sequence_record(path, header, "".join(chunks)))
     return parsed
+
+
+def _is_source_sequence(path: Path, header: str) -> bool:
+    first_token = header.split()[0].strip(",") if header else ""
+    return first_token == path.stem
 
 
 def _sequence_record(path: Path, header: str, sequence: str) -> dict[str, Any]:
