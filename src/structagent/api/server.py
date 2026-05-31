@@ -23,6 +23,12 @@ from pydantic import BaseModel
 from structagent.jobs.models import JobConfig
 from structagent.jobs.runner import PROVIDER_DEFAULTS, JobRunner
 from structagent.jobs.store import JobStore
+from structagent.project_tools import (
+    PROJECT_CHAT_TOOL_SCHEMAS,
+    execute_project_chat_tool,
+    fallback_project_tool_calls,
+    message_may_need_project_tool,
+)
 from structagent.projects import ProjectRecord, ProjectStore
 from structagent.providers import create_provider
 from structagent.profiles import list_analysis_profiles
@@ -244,23 +250,31 @@ def send_project_chat(project_id: str, payload: ProjectChatRequest) -> dict[str,
     if not message:
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-    PROJECTS.set_selection(project_id, payload.selected_job_id, payload.selected_structure_id)
+    project, selected_job_id, selected_structure_id, tool_events = _run_project_chat_tools(
+        project,
+        message,
+        payload.selected_job_id,
+        payload.selected_structure_id,
+    )
+    PROJECTS.set_selection(project_id, selected_job_id, selected_structure_id)
     project = PROJECTS.get_project(project_id)
-    PROJECTS.append_chat_message(project_id, "user", message, payload.selected_job_id, payload.selected_structure_id)
+    PROJECTS.append_chat_message(project_id, "user", message, selected_job_id, selected_structure_id)
     project = PROJECTS.get_project(project_id)
     assistant_content = _generate_project_chat_response(
-        project, message, payload.selected_job_id, payload.selected_structure_id
+        project, message, selected_job_id, selected_structure_id, tool_events
     )
     assistant_message = PROJECTS.append_chat_message(
         project_id,
         "assistant",
         assistant_content,
-        payload.selected_job_id,
-        payload.selected_structure_id,
+        selected_job_id,
+        selected_structure_id,
     )
+    project = PROJECTS.get_project(project_id)
     return {
         "message": assistant_message.to_dict(),
-        "messages": [message.to_dict() for message in PROJECTS.get_project(project_id).chat_messages],
+        "messages": [message.to_dict() for message in project.chat_messages],
+        "project": _project_response(project),
     }
 
 
@@ -474,13 +488,157 @@ def _get_project_or_404(project_id: str) -> ProjectRecord:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+def _run_project_chat_tools(
+    project: ProjectRecord,
+    user_message: str,
+    selected_job_id: str | None,
+    selected_structure_id: str | None,
+) -> tuple[ProjectRecord, str | None, str | None, list[dict[str, object]]]:
+    if not message_may_need_project_tool(user_message):
+        return project, selected_job_id, selected_structure_id, []
+
+    tool_calls = _plan_project_chat_tool_calls(project, user_message, selected_job_id, selected_structure_id)
+    if not tool_calls:
+        return project, selected_job_id, selected_structure_id, []
+
+    events: list[dict[str, object]] = []
+    current_project = project
+    current_job_id = selected_job_id
+    current_structure_id = selected_structure_id
+
+    for call in tool_calls[:3]:
+        tool_name = str(call.get("tool") or call.get("name") or "")
+        args = call.get("args") if isinstance(call.get("args"), dict) else {}
+        purpose = str(call.get("purpose") or "")
+        current_project, result = execute_project_chat_tool(PROJECTS, current_project, tool_name, args)
+        raw = result.raw if isinstance(result.raw, dict) else {}
+        current_job_id = raw.get("selected_job_id") if "selected_job_id" in raw else current_job_id
+        current_structure_id = (
+            str(raw["selected_structure_id"]) if raw.get("selected_structure_id") is not None else current_structure_id
+        )
+        events.append(
+            {
+                "tool": result.tool_name or tool_name,
+                "purpose": purpose,
+                "args": args,
+                "success": result.success,
+                "data": result.data,
+                "error": result.error,
+                "raw": raw,
+            }
+        )
+        if not result.success:
+            break
+    return current_project, current_job_id, current_structure_id, events
+
+
+def _plan_project_chat_tool_calls(
+    project: ProjectRecord,
+    user_message: str,
+    selected_job_id: str | None,
+    selected_structure_id: str | None,
+) -> list[dict[str, object]]:
+    provider_name, model, base_url, api_key = _resolve_chat_llm_config()
+    if not api_key or not model:
+        return fallback_project_tool_calls(user_message)
+
+    try:
+        provider = create_provider(
+            provider_name,
+            api_key=api_key,
+            base_url=base_url,
+            timeout=60.0,
+            temperature=0.0,
+        )
+        response = provider.chat(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are MIRA's project tool router. Return only a JSON object with a tool_calls array. "
+                        "Use tools only when the user asks to load, open, display, select, or inspect a structure. "
+                        "Do not answer the biology question here. Do not invent PDB IDs or structure IDs."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Available project tools JSON:\n"
+                        f"{json.dumps(PROJECT_CHAT_TOOL_SCHEMAS, indent=2, sort_keys=True)}\n\n"
+                        "Current project context JSON:\n"
+                        f"{json.dumps(_project_tool_context(project, selected_job_id, selected_structure_id), indent=2, sort_keys=True)}\n\n"
+                        f"User message: {user_message}\n\n"
+                        'Return shape: {"tool_calls":[{"tool":"load_pdb_id","args":{"pdb_id":"1UBQ"},"purpose":"..."}]}'
+                    ),
+                },
+            ],
+            model=model,
+            temperature=0.0,
+        )
+        parsed_calls = _parse_tool_plan(response.content)
+        return parsed_calls if parsed_calls else fallback_project_tool_calls(user_message)
+    except Exception:
+        return fallback_project_tool_calls(user_message)
+
+
+def _project_tool_context(
+    project: ProjectRecord, selected_job_id: str | None, selected_structure_id: str | None
+) -> dict[str, object]:
+    return {
+        "project": {"id": project.id, "name": project.name, "description": project.description},
+        "target": _target_structure_response(project),
+        "structures": [_project_structure_response(project, structure) for structure in project.structures],
+        "selected_job_id": selected_job_id or project.selected_job_id,
+        "selected_structure_id": selected_structure_id or project.selected_structure_id,
+    }
+
+
+def _parse_tool_plan(content: str) -> list[dict[str, object]]:
+    cleaned = _clean_chat_response(content)
+    if cleaned.startswith("json"):
+        cleaned = cleaned.removeprefix("json").strip()
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+        if not match:
+            return []
+        try:
+            payload = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return []
+
+    calls = payload.get("tool_calls") if isinstance(payload, dict) else None
+    if not isinstance(calls, list):
+        return []
+    valid_tools = {tool["name"] for tool in PROJECT_CHAT_TOOL_SCHEMAS}
+    normalized = []
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        tool_name = str(call.get("tool") or call.get("name") or "")
+        if tool_name not in valid_tools:
+            continue
+        args = call.get("args") or call.get("arguments") or {}
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                args = {}
+        if not isinstance(args, dict):
+            args = {}
+        normalized.append({"tool": tool_name, "args": args, "purpose": str(call.get("purpose") or "")})
+    return normalized
+
+
 def _generate_project_chat_response(
     project: ProjectRecord,
     user_message: str,
     selected_job_id: str | None,
     selected_structure_id: str | None,
+    tool_events: list[dict[str, object]] | None = None,
 ) -> str:
-    context = _project_chat_context(project, selected_job_id, selected_structure_id)
+    context = _project_chat_context(project, selected_job_id, selected_structure_id, tool_events)
     fallback = _deterministic_chat_response(context)
     provider_name, model, base_url, api_key = _resolve_chat_llm_config()
     if not api_key or not model:
@@ -528,6 +686,7 @@ def _project_chat_context(
     project: ProjectRecord,
     selected_job_id: str | None,
     selected_structure_id: str | None,
+    tool_events: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     target = _target_structure_response(project)
     local_structure = _select_project_structure(project, selected_structure_id or project.selected_structure_id)
@@ -561,6 +720,7 @@ def _project_chat_context(
         "batch_summary": results.get("summary") if isinstance(results, dict) else None,
         "ranking": (results.get("ranking") or [])[:8] if isinstance(results, dict) else [],
         "selected_structure": _structure_chat_context(selected_structure),
+        "tool_results": tool_events or [],
         "report_excerpt": report_excerpt,
         "recent_chat": [message.to_dict() for message in project.chat_messages[-8:]],
     }
@@ -617,8 +777,26 @@ def _deterministic_chat_response(context: dict[str, object]) -> str:
     )
     batch_summary = context.get("batch_summary") if isinstance(context.get("batch_summary"), dict) else {}
     target = project.get("target") if isinstance(project, dict) else None
+    tool_results = context.get("tool_results") if isinstance(context.get("tool_results"), list) else []
 
     lines = [f"I have the `{project.get('name', 'project')}` workspace loaded."]
+    failed_tool = next((item for item in tool_results if isinstance(item, dict) and not item.get("success")), None)
+    if failed_tool:
+        raw = failed_tool.get("raw") if isinstance(failed_tool.get("raw"), dict) else {}
+        pdb_label = f" for `{raw.get('pdb_id')}`" if raw.get("pdb_id") else ""
+        return (
+            f"I could not complete `{failed_tool.get('tool')}`"
+            f"{pdb_label}. "
+            f"{failed_tool.get('error') or 'Try uploading the structure file directly.'}"
+        )
+    for item in tool_results:
+        if not isinstance(item, dict):
+            continue
+        raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+        if raw.get("pdb_id") and raw.get("status") in {"loaded", "selected_existing"}:
+            lines.append(f"`{raw.get('pdb_id')}` is now selected in the structure panel.")
+            break
+
     if isinstance(target, dict):
         lines.append(f"The current target is `{target.get('pdb_id')}`.")
     else:

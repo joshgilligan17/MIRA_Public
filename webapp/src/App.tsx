@@ -385,13 +385,16 @@ function ChatPage({ refreshProjects }: { refreshProjects: () => Promise<void> })
     setSubmitting(true);
     setNotice(null);
     try {
-      const nextMessages = await sendProjectChat(
+      const chatResponse = await sendProjectChat(
         project.id,
         message,
         project.selected_job_id,
         selectedStructure?.id ?? project.selected_structure_id,
       );
-      setMessages(nextMessages);
+      setMessages(chatResponse.messages);
+      const nextProject = chatResponse.project ?? (await getProject(project.id));
+      setProject(nextProject);
+      await loadSelectedProjectStructure(nextProject, setSelectedStructure, setReportMarkdown);
       await refreshProjects();
     } catch (error) {
       setPrompt(message);

@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from structagent.api import server
 from structagent.jobs.runner import JobRunner
 from structagent.jobs.store import JobStore
+from structagent import project_tools
 from structagent.projects import ProjectStore
 from structagent.providers import ProviderResponse
 
@@ -217,3 +218,58 @@ def test_project_chat_can_use_uploaded_structure_without_batch(tmp_path, monkeyp
 
     assert chat.status_code == 200
     assert chat.json()["messages"][-1]["content"] == "I am looking at `CHAT_STRUCTURE` in the structure panel."
+
+
+def test_project_chat_can_pull_up_pdb_id_from_message(tmp_path, monkeypatch):
+    class FakeProvider:
+        def chat(self, messages, model, **kwargs):
+            if "project tool router" in messages[0]["content"]:
+                return ProviderResponse(
+                    content='{"tool_calls":[{"tool":"load_pdb_id","args":{"pdb_id":"1UBQ"},"purpose":"Open requested structure"}]}',
+                    input_tokens=12,
+                    output_tokens=18,
+                )
+            prompt = messages[-1]["content"]
+            assert '"pdb_id": "1UBQ"' in prompt
+            assert '"selected_job": null' in prompt
+            assert '"status": "loaded"' in prompt
+            return ProviderResponse(
+                content="`1UBQ` is now visible in the structure panel.",
+                input_tokens=12,
+                output_tokens=18,
+            )
+
+    def fake_create_provider(provider_name, api_key, base_url=None, timeout=120.0, temperature=0.0):
+        return FakeProvider()
+
+    def fake_download(pdb_id):
+        assert pdb_id == "1UBQ"
+        return b"data_1ubq"
+
+    projects = ProjectStore(tmp_path / "projects")
+    monkeypatch.setattr(server, "PROJECTS", projects)
+    monkeypatch.setattr(server, "create_provider", fake_create_provider)
+    monkeypatch.setattr(project_tools, "_download_rcsb_cif", fake_download)
+    monkeypatch.setenv("MIRA_REPORT_PROVIDER", "openai")
+    monkeypatch.setenv("MIRA_REPORT_MODEL", "fake-model")
+    monkeypatch.setenv("MIRA_REPORT_API_KEY", "test-key")
+    client = TestClient(server.app)
+
+    project_id = client.post("/api/projects", json={"name": "Target chat"}).json()["project"]["id"]
+
+    chat = client.post(
+        f"/api/projects/{project_id}/chat",
+        json={"message": "Pull up 1ubq and tell me what target we are looking at."},
+    )
+
+    assert chat.status_code == 200
+    body = chat.json()
+    structure = body["project"]["structures"][0]
+    assert structure["pdb_id"] == "1UBQ"
+    assert body["project"]["selected_job_id"] is None
+    assert body["project"]["selected_structure_id"] == structure["id"]
+    assert body["messages"][-1]["selected_structure_id"] == structure["id"]
+    assert body["messages"][-1]["content"] == "`1UBQ` is now visible in the structure panel."
+    structure_file = client.get(structure["structure_url"])
+    assert structure_file.status_code == 200
+    assert structure_file.content == b"data_1ubq"

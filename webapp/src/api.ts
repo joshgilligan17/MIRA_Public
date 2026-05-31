@@ -225,8 +225,8 @@ export async function sendProjectChat(
   message: string,
   selectedJobId?: string | null,
   selectedStructureId?: string | null,
-): Promise<ChatMessage[]> {
-  const data = await apiJson<{ messages: ChatMessage[] }>(`/api/projects/${projectId}/chat`, {
+): Promise<{ messages: ChatMessage[]; project?: Project }> {
+  const data = await apiJson<{ messages: ChatMessage[]; project?: Project }>(`/api/projects/${projectId}/chat`, {
     method: "POST",
     body: JSON.stringify({
       message,
@@ -234,7 +234,7 @@ export async function sendProjectChat(
       selected_structure_id: selectedStructureId || null,
     }),
   });
-  return data.messages ?? [];
+  return { messages: data.messages ?? [], project: data.project };
 }
 
 export async function getJob(jobId: string): Promise<{ job: Job; progress: number }> {
