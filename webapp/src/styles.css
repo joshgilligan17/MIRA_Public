@@ -151,6 +151,30 @@ a {
   margin: 16px 0;
 }
 
+.project-nav-heading {
+  display: grid;
+  gap: 3px;
+  margin: 10px 0 2px;
+  padding: 10px 10px 8px;
+  border-top: 1px solid #e1ebf4;
+}
+
+.project-nav-heading span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.project-nav-heading strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .nav-item,
 .project-link {
   display: flex;

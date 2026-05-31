@@ -4,6 +4,7 @@ import {
   FileArchive,
   Folder,
   FolderPlus,
+  Home,
   Loader2,
   MessageSquare,
   Microscope,
@@ -154,11 +155,15 @@ function Sidebar({
       <StatusPill online={apiOnline} synthesis={synthesisStatus} />
       <nav className="mode-nav">
         <NavLink to="/projects" end className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}>
-          <Folder size={18} />
-          <span>Projects</span>
+          <Home size={18} />
+          <span>Home</span>
         </NavLink>
         {activeProject && (
           <>
+            <div className="project-nav-heading">
+              <span>Project</span>
+              <strong>{activeProject.name}</strong>
+            </div>
             <NavLink
               to={`/projects/${activeProject.id}/chat`}
               className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}

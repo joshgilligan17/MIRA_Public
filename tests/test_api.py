@@ -317,6 +317,62 @@ def test_project_tool_router_does_not_start_generation_for_results_question():
     assert server._merge_tool_plan_with_fallback(filtered, fallback) == []
 
 
+def test_project_chat_exposes_registry_tools_for_selected_structure(tmp_path, monkeypatch):
+    class FakeProvider:
+        def chat(self, messages, model, **kwargs):
+            if "project tool router" in messages[0]["content"]:
+                assert '"analyze_bfactors"' in messages[-1]["content"]
+                assert '"compute_normal_modes"' in messages[-1]["content"]
+                return ProviderResponse(
+                    content=(
+                        '{"tool_calls":[{"tool":"analyze_bfactors",'
+                        '"args":{"chain_id":"A"},'
+                        '"purpose":"Run the existing B-factor registry tool"}]}'
+                    ),
+                    input_tokens=30,
+                    output_tokens=20,
+                )
+            prompt = messages[-1]["content"]
+            assert '"registry_tool": "analyze_bfactors"' in prompt
+            assert '"mean_bfactor"' in prompt
+            return ProviderResponse(
+                content="B-factor analysis completed from the registry tool.", input_tokens=20, output_tokens=18
+            )
+
+    def fake_create_provider(provider_name, api_key, base_url=None, timeout=120.0, temperature=0.0):
+        return FakeProvider()
+
+    projects = ProjectStore(tmp_path / "projects")
+    monkeypatch.setattr(server, "PROJECTS", projects)
+    monkeypatch.setattr(server, "create_provider", fake_create_provider)
+    monkeypatch.setenv("MIRA_REPORT_PROVIDER", "openai")
+    monkeypatch.setenv("MIRA_REPORT_MODEL", "fake-model")
+    monkeypatch.setenv("MIRA_REPORT_API_KEY", "test-key")
+    client = TestClient(server.app)
+
+    project_id = client.post("/api/projects", json={"name": "Registry tools"}).json()["project"]["id"]
+    with open("tests/data/local/mini_complex.pdb", "rb") as handle:
+        upload = client.post(
+            f"/api/projects/{project_id}/target",
+            files={"file": ("target.pdb", handle, "chemical/x-pdb")},
+        )
+    assert upload.status_code == 200
+
+    chat = client.post(
+        f"/api/projects/{project_id}/chat",
+        json={"message": "Analyze B-factors for chain A using the selected target."},
+    )
+
+    assert chat.status_code == 200
+    event = chat.json()["messages"][-1]["tool_events"][0]
+    assert event["tool"] == "analyze_bfactors"
+    assert event["raw"]["registry_tool"] == "analyze_bfactors"
+    assert event["raw"]["metrics"]["mean_bfactor"] > 0
+    project = client.get(f"/api/projects/{project_id}").json()["project"]
+    assert project["analyses"][0]["kind"] == "tool_analyze_bfactors"
+    assert project["selected_structure_id"] == "target"
+
+
 def test_project_chat_can_analyze_uploaded_structure(tmp_path, monkeypatch):
     class FakeProvider:
         def chat(self, messages, model, **kwargs):

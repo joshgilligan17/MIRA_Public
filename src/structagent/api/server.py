@@ -26,6 +26,7 @@ from structagent.jobs.store import JobStore
 from structagent.project_tools import (
     PROJECT_CHAT_TOOL_SCHEMAS,
     ProjectToolRuntime,
+    _REGISTRY_PROJECT_TOOL_NAMES,
     execute_project_chat_tool,
     fallback_project_tool_calls,
     message_is_results_status_query,
@@ -707,6 +708,8 @@ def _merge_tool_plan_with_fallback(
     for call in fallback_calls:
         tool_name = str(call.get("tool") or call.get("name") or "")
         if tool_name == "load_pdb_id" and planned_tools.intersection({"load_pdb_id", "select_project_structure"}):
+            continue
+        if tool_name == "analyze_structure" and planned_tools.intersection(_REGISTRY_PROJECT_TOOL_NAMES):
             continue
         if tool_name in planned_tools:
             continue

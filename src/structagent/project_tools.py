@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from structagent.jobs.runner import JobRunner
 from structagent.jobs.store import JobStore
 from structagent.projects import ProjectRecord, ProjectStore
 from structagent.registry import ToolRegistry, ToolResult
+from structagent.tool_metadata import TOOL_SCHEMAS
 
 
 PDB_ID_PATTERN = re.compile(r"\b([0-9][A-Za-z0-9]{3})\b")
@@ -32,7 +34,7 @@ class ProjectToolRuntime:
     llm_api_key: str | None = None
 
 
-PROJECT_CHAT_TOOL_SCHEMAS: list[dict[str, Any]] = [
+_PROJECT_NATIVE_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "load_pdb_id",
         "description": "Fetch an RCSB PDB/mmCIF structure by 4-character PDB ID and select it in the project viewer.",
@@ -197,6 +199,56 @@ PROJECT_CHAT_TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
+_PROJECT_NATIVE_TOOL_NAMES = {schema["name"] for schema in _PROJECT_NATIVE_TOOL_SCHEMAS}
+_REGISTRY_PROJECT_TOOL_NAMES = {schema["name"] for schema in TOOL_SCHEMAS}
+
+
+def _project_chat_tool_schemas() -> list[dict[str, Any]]:
+    schemas = list(_PROJECT_NATIVE_TOOL_SCHEMAS)
+    schemas.extend(_project_wrapped_registry_schema(schema) for schema in TOOL_SCHEMAS)
+    return schemas
+
+
+def _project_wrapped_registry_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    wrapped = deepcopy(schema)
+    params = wrapped.setdefault("parameters", {"type": "object", "properties": {}, "required": []})
+    params.setdefault("type", "object")
+    properties = params.setdefault("properties", {})
+    params.setdefault("required", [])
+    params["additionalProperties"] = False
+    if "pdb_path" in properties or "input_path" in properties:
+        properties.setdefault(
+            "structure_id_or_pdb_id",
+            {
+                "type": "string",
+                "description": "Project structure id, 'target', or visible file/PDB stem. Defaults to selected project structure.",
+            },
+        )
+    if "pdb_path_1" in properties:
+        properties.setdefault(
+            "structure_id_or_pdb_id_1",
+            {
+                "type": "string",
+                "description": "First project structure id, 'target', or file/PDB stem. Defaults to selected project structure.",
+            },
+        )
+    if "pdb_path_2" in properties:
+        properties.setdefault(
+            "structure_id_or_pdb_id_2",
+            {
+                "type": "string",
+                "description": "Second project structure id, 'target', or file/PDB stem.",
+            },
+        )
+    wrapped["description"] = (
+        f"{wrapped.get('description', '')} In project chat, omit local path fields to use the selected project structure."
+    )
+    return wrapped
+
+
+PROJECT_CHAT_TOOL_SCHEMAS: list[dict[str, Any]] = _project_chat_tool_schemas()
+
+
 def message_may_need_project_tool(message: str) -> bool:
     lowered = message.lower()
     if message_is_results_status_query(message):
@@ -231,6 +283,25 @@ def message_may_need_project_tool(message: str) -> bool:
         "bindcraft",
         "proteinmpnn",
         "ligandmpnn",
+        "secondary structure",
+        "conservation",
+        "annotation",
+        "functional",
+        "homolog",
+        "foldseek",
+        "align",
+        "alignment",
+        "rmsd",
+        "renumber",
+        "relax",
+        "interface energy",
+        "score interface",
+        "normal mode",
+        "cross correlation",
+        "dynamics",
+        "hinge",
+        "perturbation",
+        "allosteric",
     )
     return bool(PDB_ID_PATTERN.search(message)) or any(word in lowered for word in action_words)
 
@@ -283,6 +354,10 @@ def fallback_project_tool_calls(message: str) -> list[dict[str, Any]]:
         calls.append({"tool": "analyze_structure", "args": {}, "purpose": "Detected target-analysis request."})
     if any(word in lowered for word in ("batch", "rank", "screen")):
         calls.append({"tool": "start_batch_from_project", "args": {}, "purpose": "Detected batch-screening request."})
+    direct_tool = _fallback_registry_tool_name(lowered)
+    if direct_tool:
+        args = _fallback_registry_args(message, direct_tool)
+        calls.append({"tool": direct_tool, "args": args, "purpose": f"Detected {direct_tool} request."})
     if any(
         word in lowered
         for word in ("design", "generate", "rfdiffusion", "rf diffusion", "bindcraft", "proteinmpnn", "ligandmpnn")
@@ -304,6 +379,59 @@ def fallback_project_tool_calls(message: str) -> list[dict[str, Any]]:
             }
         )
     return calls[:6]
+
+
+def _fallback_registry_tool_name(lowered: str) -> str | None:
+    phrase_map = [
+        (("secondary structure",), "get_secondary_structure"),
+        (("conservation", "conserved"), "get_conservation_scores"),
+        (("annotation", "functional"), "get_functional_annotations"),
+        (("homolog", "foldseek"), "search_structural_homologs"),
+        (("align", "alignment", "rmsd"), "align_structures"),
+        (("renumber",), "renumber_pdb"),
+        (("relax",), "fast_relax"),
+        (("interface energy", "interface energies"), "analyze_interface_energies"),
+        (("score interface", "interface score"), "score_interface"),
+        (("normal mode", "normal modes"), "compute_normal_modes"),
+        (("cross correlation", "cross correlations"), "compute_cross_correlations"),
+        (("hinge",), "predict_hinge_regions"),
+        (("perturbation", "allosteric"), "compute_perturbation_response"),
+    ]
+    for phrases, tool_name in phrase_map:
+        if any(phrase in lowered for phrase in phrases):
+            return tool_name
+    return None
+
+
+def _fallback_registry_args(message: str, tool_name: str) -> dict[str, Any]:
+    args: dict[str, Any] = {}
+    chain = _extract_chain_id(message)
+    if chain and _tool_accepts_parameter(tool_name, "chain_id"):
+        args["chain_id"] = chain
+    if chain and tool_name == "analyze_interface_energies":
+        args["binder_chain"] = chain
+    if chain and tool_name == "score_interface":
+        args["binder_chains"] = chain
+    residue = _extract_residue_number(message)
+    if residue is not None and tool_name == "compute_perturbation_response":
+        args["source_residue"] = residue
+    return args
+
+
+def _tool_accepts_parameter(tool_name: str, parameter: str) -> bool:
+    schema = next((schema for schema in TOOL_SCHEMAS if schema["name"] == tool_name), None)
+    properties = ((schema or {}).get("parameters") or {}).get("properties") or {}
+    return parameter in properties
+
+
+def _extract_chain_id(message: str) -> str | None:
+    match = re.search(r"\bchain\s+([A-Za-z0-9])\b", message, flags=re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
+def _extract_residue_number(message: str) -> int | None:
+    match = re.search(r"\b(?:residue|res|position)\s+(\d+)\b", message, flags=re.IGNORECASE)
+    return int(match.group(1)) if match else None
 
 
 def extract_pdb_id(message: str) -> str | None:
@@ -331,6 +459,8 @@ def execute_project_chat_tool(
         return _start_batch_from_project(runtime, project, args)
     if tool_name == "generate_design_candidates":
         return _generate_design_candidates(runtime, project, args)
+    if tool_name in _REGISTRY_PROJECT_TOOL_NAMES:
+        return _run_registry_project_tool(runtime, project, tool_name, args)
     return (
         project,
         ToolResult(
@@ -641,6 +771,146 @@ def _analyze_interface(
     )
 
 
+def _run_registry_project_tool(
+    runtime: ProjectToolRuntime, project: ProjectRecord, tool_name: str, args: dict[str, Any]
+) -> tuple[ProjectRecord, ToolResult]:
+    registry = _structure_registry()
+    schema = next((schema for schema in TOOL_SCHEMAS if schema["name"] == tool_name), None)
+    if not schema:
+        return _tool_error(project, tool_name, f"Unknown registry tool: {tool_name}")
+
+    kwargs, selected_ref, setup_error = _registry_tool_kwargs(runtime.project_store, project, schema, args)
+    if setup_error:
+        return _tool_error(project, tool_name, setup_error)
+
+    result = registry.call_tool(tool_name, **kwargs)
+    tool_events: list[dict[str, Any]] = []
+    metrics: dict[str, Any] = {}
+    features: dict[str, Any] = {}
+    selected_structure_id = str(selected_ref["id"]) if selected_ref else project.selected_structure_id
+    selected_pdb_id = str(selected_ref["pdb_id"]) if selected_ref else str(kwargs.get("pdb_id") or "")
+    _append_tool_event(tool_events, result, {"tool_name": tool_name, **_redacted_registry_args(kwargs)})
+    _merge_tool_output(metrics, features, result, chain_id=str(kwargs.get("chain_id") or "") or None)
+
+    generated_structure_ids = []
+    raw = result.raw if isinstance(result.raw, dict) else {}
+    output_path = raw.get("output_path") or raw.get("relaxed_path")
+    if isinstance(output_path, str):
+        maybe_path = Path(output_path)
+        if maybe_path.exists() and maybe_path.suffix.lower() in SUPPORTED_STRUCTURE_SUFFIXES:
+            _, structure = runtime.project_store.save_structure(project.id, maybe_path.name, maybe_path.read_bytes())
+            generated_structure_ids.append(structure.id)
+
+    analysis = runtime.project_store.save_analysis(
+        project.id,
+        kind=f"tool_{tool_name}",
+        query=str({"tool": tool_name, "args": _redacted_registry_args(kwargs)}),
+        status="completed" if result.success else "failed",
+        selected_structure_id=selected_structure_id,
+        tool_events=tool_events,
+        metrics=metrics,
+        features=features,
+        summary=_short_text(result.data, 8000),
+    )
+    updated_project = (
+        runtime.project_store.set_selection(project.id, None, selected_structure_id)
+        if selected_structure_id
+        else project
+    )
+    return (
+        updated_project,
+        ToolResult(
+            success=result.success,
+            data=f"Ran `{tool_name}` for {selected_pdb_id or 'the selected project context'}.",
+            raw={
+                "status": "completed" if result.success else "failed",
+                "analysis_id": analysis.id,
+                "registry_tool": tool_name,
+                "pdb_id": selected_pdb_id or kwargs.get("pdb_id"),
+                "selected_structure_id": selected_structure_id,
+                "selected_job_id": None,
+                "metrics": metrics,
+                "features": features,
+                "generated_structure_ids": generated_structure_ids,
+                "tool_events": tool_events,
+            },
+            error=result.error,
+            tool_name=tool_name,
+        ),
+    )
+
+
+def _registry_tool_kwargs(
+    project_store: ProjectStore, project: ProjectRecord, schema: dict[str, Any], args: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any] | None, str | None]:
+    tool_name = schema["name"]
+    properties = (schema.get("parameters") or {}).get("properties") or {}
+    allowed = set(properties)
+    internal_keys = {"structure_id_or_pdb_id", "structure_id_or_pdb_id_1", "structure_id_or_pdb_id_2"}
+    kwargs = {
+        key: value
+        for key, value in args.items()
+        if key in allowed and key not in internal_keys and value is not None and value != ""
+    }
+    for path_key in ("pdb_path", "input_path", "pdb_path_1", "pdb_path_2", "plot_output"):
+        kwargs.pop(path_key, None)
+
+    selected_ref = _resolve_structure(project_store, project, args.get("structure_id_or_pdb_id"))
+
+    if "pdb_path" in properties:
+        if selected_ref:
+            kwargs["pdb_path"] = str(selected_ref["path"])
+            kwargs.pop("pdb_id", None)
+        elif not kwargs.get("pdb_path") and not kwargs.get("pdb_id"):
+            return kwargs, selected_ref, "Select or upload a project structure before running this tool."
+    if "input_path" in properties:
+        if selected_ref:
+            kwargs["input_path"] = str(selected_ref["path"])
+        elif not kwargs.get("input_path"):
+            return kwargs, selected_ref, "Select or upload a project structure before running this tool."
+
+    if tool_name == "align_structures":
+        first_ref = _resolve_structure(project_store, project, args.get("structure_id_or_pdb_id_1")) or selected_ref
+        second_ref = _resolve_structure(project_store, project, args.get("structure_id_or_pdb_id_2"))
+        if first_ref:
+            kwargs["pdb_path_1"] = str(first_ref["path"])
+            kwargs.pop("pdb_id_1", None)
+            selected_ref = first_ref
+        if second_ref:
+            kwargs["pdb_path_2"] = str(second_ref["path"])
+            kwargs.pop("pdb_id_2", None)
+        if not (kwargs.get("pdb_path_1") or kwargs.get("pdb_id_1")):
+            return kwargs, selected_ref, "Alignment needs a first structure."
+        if not (kwargs.get("pdb_path_2") or kwargs.get("pdb_id_2")):
+            return kwargs, selected_ref, "Alignment needs a second structure or PDB ID."
+
+    if "plot_output" in properties and "plot_output" not in kwargs:
+        output_dir = project_store.analysis_dir(project.id) / "tool_outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        kwargs["plot_output"] = str(output_dir / f"{tool_name}_{os.getpid()}.png")
+
+    if tool_name in {"get_functional_annotations", "get_conservation_scores", "search_structural_homologs"}:
+        if not kwargs.get("pdb_id") and selected_ref:
+            pdb_id = str(selected_ref.get("pdb_id") or "")
+            if PDB_ID_PATTERN.fullmatch(pdb_id):
+                kwargs["pdb_id"] = pdb_id
+        if not kwargs.get("pdb_id"):
+            return kwargs, selected_ref, f"`{tool_name}` requires an RCSB PDB ID."
+
+    if tool_name == "renumber_pdb" and "pdb_path" not in kwargs:
+        return kwargs, selected_ref, "Renumbering needs a selected local PDB project structure."
+
+    return kwargs, selected_ref, None
+
+
+def _redacted_registry_args(kwargs: dict[str, Any]) -> dict[str, Any]:
+    redacted = dict(kwargs)
+    for key in list(redacted):
+        if key.endswith("_path") or key in {"pdb_path", "input_path", "plot_output"}:
+            redacted[key] = Path(str(redacted[key])).name
+    return redacted
+
+
 def _start_batch_from_project(
     runtime: ProjectToolRuntime, project: ProjectRecord, args: dict[str, Any]
 ) -> tuple[ProjectRecord, ToolResult]:
@@ -861,11 +1131,20 @@ def _structure_registry() -> ToolRegistry:
 
 
 def _import_structure_tools() -> None:
+    from structagent.tools import alignment as _alignment  # noqa: F401
+    from structagent.tools import annotations as _annotations  # noqa: F401
     from structagent.tools import bfactor as _bfactor  # noqa: F401
     from structagent.tools import charge as _charge  # noqa: F401
+    from structagent.tools import conservation as _conservation  # noqa: F401
     from structagent.tools import contacts as _contacts  # noqa: F401
+    from structagent.tools import dynamics as _dynamics  # noqa: F401
+    from structagent.tools import foldseek as _foldseek  # noqa: F401
     from structagent.tools import interface as _interface  # noqa: F401
+    from structagent.tools import interface_energy as _interface_energy  # noqa: F401
+    from structagent.tools import pyrosetta_interface as _pyrosetta_interface  # noqa: F401
     from structagent.tools import ramachandran as _ramachandran  # noqa: F401
+    from structagent.tools import relaxation as _relaxation  # noqa: F401
+    from structagent.tools import renumber_pdb as _renumber_pdb  # noqa: F401
     from structagent.tools import sasa as _sasa  # noqa: F401
     from structagent.tools import secondary_structure as _secondary_structure  # noqa: F401
     from structagent.tools import structure_io as _structure_io  # noqa: F401
