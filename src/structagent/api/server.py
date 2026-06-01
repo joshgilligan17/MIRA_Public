@@ -610,31 +610,32 @@ def _plan_project_chat_tool_calls(
                 {
                     "role": "system",
                     "content": (
-                        "You are MIRA's project tool router. Return only a JSON object with a tool_calls array. "
-                        "Use tools when the user asks to load/select a structure, inspect or analyze target "
-                        "structure properties, identify hotspots/epitopes, examine contacts/interfaces, start a "
-                        "batch screen from project structures, or invoke a configured design library. "
-                        "If the user asks for results, status, progress, or what was generated, return an empty "
-                        "tool_calls array; the answer should use existing project context, not start new work. "
-                        "Do not answer the biology question here. Do not invent PDB IDs or structure IDs."
+                        "You are MIRA's project tool router. Use the provided tool calls when the user asks to "
+                        "load/select a structure, inspect or analyze target structure properties, identify "
+                        "hotspots/epitopes, examine contacts/interfaces, start a batch screen from project "
+                        "structures, or invoke a configured design library. If the user asks for results, status, "
+                        "progress, or what was generated, do not call a tool; the answer should use existing "
+                        "project context, not start new work. Do not answer the biology question here. Do not "
+                        "invent PDB IDs or structure IDs."
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
-                        "Available project tools JSON:\n"
-                        f"{json.dumps(PROJECT_CHAT_TOOL_SCHEMAS, indent=2, sort_keys=True)}\n\n"
                         "Current project context JSON:\n"
                         f"{json.dumps(_project_tool_context(project, selected_job_id, selected_structure_id), indent=2, sort_keys=True)}\n\n"
-                        f"User message: {user_message}\n\n"
-                        'Return shape: {"tool_calls":[{"tool":"load_pdb_id","args":{"pdb_id":"1UBQ"},"purpose":"..."}]}'
+                        f"User message: {user_message}"
                     ),
                 },
             ],
             model=model,
             temperature=0.0,
+            tools=_project_chat_function_tools(),
+            tool_choice="auto",
         )
-        parsed_calls = _parse_tool_plan(response.content)
+        parsed_calls = _parse_native_tool_plan(response.tool_calls or [])
+        if not parsed_calls:
+            parsed_calls = _parse_tool_plan(response.content)
         if message_is_results_status_query(user_message):
             parsed_calls = [
                 call
@@ -645,6 +646,41 @@ def _plan_project_chat_tool_calls(
         return _merge_tool_plan_with_fallback(parsed_calls, fallback_project_tool_calls(user_message))
     except Exception:
         return fallback_project_tool_calls(user_message)
+
+
+def _project_chat_function_tools() -> list[dict[str, object]]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": schema["name"],
+                "description": schema.get("description") or "",
+                "parameters": schema.get("parameters") or {"type": "object", "properties": {}},
+            },
+        }
+        for schema in PROJECT_CHAT_TOOL_SCHEMAS
+    ]
+
+
+def _parse_native_tool_plan(tool_calls: list[dict[str, Any]]) -> list[dict[str, object]]:
+    valid_tools = {tool["name"] for tool in PROJECT_CHAT_TOOL_SCHEMAS}
+    normalized = []
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            continue
+        tool_name = str(call.get("name") or call.get("tool") or "")
+        if tool_name not in valid_tools:
+            continue
+        args = call.get("arguments") or call.get("args") or {}
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                args = {}
+        if not isinstance(args, dict):
+            args = {}
+        normalized.append({"tool": tool_name, "args": args, "purpose": "Model-selected project tool call."})
+    return normalized
 
 
 def _project_tool_context(

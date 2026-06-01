@@ -328,7 +328,8 @@ def test_project_chat_identifies_hotspots_when_router_abstains(tmp_path, monkeyp
     class FakeProvider:
         def chat(self, messages, model, **kwargs):
             if "project tool router" in messages[0]["content"]:
-                assert '"identify_hotspots"' in messages[-1]["content"]
+                tool_names = {tool["function"]["name"] for tool in kwargs.get("tools", [])}
+                assert "identify_hotspots" in tool_names
                 return ProviderResponse(content='{"tool_calls":[]}', input_tokens=20, output_tokens=4)
             prompt = messages[-1]["content"]
             assert '"tool": "identify_hotspots"' in prompt
@@ -379,16 +380,15 @@ def test_project_chat_exposes_registry_tools_for_selected_structure(tmp_path, mo
     class FakeProvider:
         def chat(self, messages, model, **kwargs):
             if "project tool router" in messages[0]["content"]:
-                assert '"analyze_bfactors"' in messages[-1]["content"]
-                assert '"compute_normal_modes"' in messages[-1]["content"]
+                tool_names = {tool["function"]["name"] for tool in kwargs.get("tools", [])}
+                assert "analyze_bfactors" in tool_names
+                assert "compute_normal_modes" in tool_names
+                assert kwargs["tool_choice"] == "auto"
                 return ProviderResponse(
-                    content=(
-                        '{"tool_calls":[{"tool":"analyze_bfactors",'
-                        '"args":{"chain_id":"A"},'
-                        '"purpose":"Run the existing B-factor registry tool"}]}'
-                    ),
+                    content="",
                     input_tokens=30,
                     output_tokens=20,
+                    tool_calls=[{"name": "analyze_bfactors", "arguments": '{"chain_id":"A"}'}],
                 )
             prompt = messages[-1]["content"]
             assert '"registry_tool": "analyze_bfactors"' in prompt

@@ -17,6 +17,7 @@ class ProviderResponse:
     input_tokens: int
     output_tokens: int
     raw: Any = None
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 class BaseProvider(ABC):
@@ -67,16 +68,21 @@ class OpenAIProvider(BaseProvider):
     def chat(self, messages: list[dict], model: str, **kwargs) -> ProviderResponse:
         """Send chat request via OpenAI SDK."""
         temperature = kwargs.get("temperature", self.temperature)
-        response = self._client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-        )
+        request: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        if kwargs.get("tools"):
+            request["tools"] = kwargs["tools"]
+            request["tool_choice"] = kwargs.get("tool_choice", "auto")
+        response = self._client.chat.completions.create(**request)
         return ProviderResponse(
             content=response.choices[0].message.content or "",
             input_tokens=response.usage.prompt_tokens if response.usage else 0,
             output_tokens=response.usage.completion_tokens if response.usage else 0,
             raw=response,
+            tool_calls=_openai_tool_calls(response),
         )
 
 
@@ -176,16 +182,21 @@ class MiniMaxProvider(BaseProvider):
     def chat(self, messages: list[dict], model: str, **kwargs) -> ProviderResponse:
         """Send chat request via OpenAI SDK (MiniMax is OpenAI-compatible)."""
         temperature = kwargs.get("temperature", self.temperature)
-        response = self._client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-        )
+        request: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        if kwargs.get("tools"):
+            request["tools"] = kwargs["tools"]
+            request["tool_choice"] = kwargs.get("tool_choice", "auto")
+        response = self._client.chat.completions.create(**request)
         return ProviderResponse(
             content=response.choices[0].message.content or "",
             input_tokens=response.usage.prompt_tokens if response.usage else 0,
             output_tokens=response.usage.completion_tokens if response.usage else 0,
             raw=response,
+            tool_calls=_openai_tool_calls(response),
         )
 
 
@@ -227,17 +238,45 @@ class AzureProvider(BaseProvider):
     def chat(self, messages: list[dict], model: str, **kwargs) -> ProviderResponse:
         """Send chat request via Azure OpenAI SDK."""
         temperature = kwargs.get("temperature", self.temperature)
-        response = self._client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-        )
+        request: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        if kwargs.get("tools"):
+            request["tools"] = kwargs["tools"]
+            request["tool_choice"] = kwargs.get("tool_choice", "auto")
+        response = self._client.chat.completions.create(**request)
         return ProviderResponse(
             content=response.choices[0].message.content or "",
             input_tokens=response.usage.prompt_tokens if response.usage else 0,
             output_tokens=response.usage.completion_tokens if response.usage else 0,
             raw=response,
+            tool_calls=_openai_tool_calls(response),
         )
+
+
+def _openai_tool_calls(response: Any) -> list[dict[str, Any]]:
+    """Extract OpenAI-compatible tool calls into provider-neutral dictionaries."""
+    try:
+        message = response.choices[0].message
+    except (AttributeError, IndexError, TypeError):
+        return []
+    calls = getattr(message, "tool_calls", None) or []
+    normalized: list[dict[str, Any]] = []
+    for call in calls:
+        function = getattr(call, "function", None)
+        name = getattr(function, "name", None)
+        if not name:
+            continue
+        normalized.append(
+            {
+                "id": getattr(call, "id", None),
+                "name": name,
+                "arguments": getattr(function, "arguments", "") or "{}",
+            }
+        )
+    return normalized
 
 
 def create_provider(
