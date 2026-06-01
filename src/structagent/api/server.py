@@ -948,6 +948,15 @@ def _deterministic_chat_response(context: dict[str, object]) -> str:
         raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
         if raw.get("analysis_id"):
             lines.append(f"Saved analysis `{raw.get('analysis_id')}` for the selected structure.")
+        if item.get("tool") == "identify_hotspots":
+            metrics = raw.get("metrics") if isinstance(raw.get("metrics"), dict) else {}
+            count = metrics.get("hotspot_count", 0)
+            lines.append(f"Hotspot analysis completed and identified `{count}` candidate residue(s).")
+            raw_features = raw.get("features") if isinstance(raw.get("features"), dict) else {}
+            hotspot_features = raw_features.get("hotspots") if isinstance(raw_features.get("hotspots"), list) else []
+            hotspot_refs = [ref for feature in hotspot_features[:4] if (ref := _region_link("hotspots", feature))]
+            if hotspot_refs:
+                lines.append(f"Top hotspot evidence: {', '.join(hotspot_refs)}.")
         if raw.get("job_id"):
             lines.append(
                 f"Started batch job `{raw.get('job_id')}` over {raw.get('structure_count', 'project')} structure(s)."
