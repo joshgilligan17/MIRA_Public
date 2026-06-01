@@ -27,7 +27,7 @@ python -m venv foldingdiff-venv
 . foldingdiff-venv/bin/activate
 pip install --upgrade pip setuptools wheel
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install numpy pandas scipy scikit-learn requests transformers huggingface_hub pytorch-lightning biotite seaborn gitpython astropy mpl-scatter-density
+pip install numpy pandas scipy scikit-learn requests 'transformers==4.30.2' 'huggingface_hub<1.0' pytorch-lightning biotite seaborn gitpython astropy mpl-scatter-density
 pip install -e FoldingDiff
 python - <<'PY'
 from pathlib import Path
