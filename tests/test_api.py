@@ -685,6 +685,10 @@ print(f"generated {args.n} FoldingDiff backbones at length {args.l[0]} on {args.
     assert run["parameters"]["device"] == "cpu"
     assert len(run["generated_structure_ids"]) == 3
     assert len(project["structures"]) == 3
+    assert project["selected_structure_id"] in run["generated_structure_ids"]
+    generated = client.get(f"/api/projects/{project_id}/structures/{run['generated_structure_ids'][0]}")
+    assert generated.status_code == 200
+    assert b"ATOM" in generated.content
     messages = client.get(f"/api/projects/{project_id}/chat").json()["messages"]
     assert any("Saved `3` generated structure file(s)" in message["content"] for message in messages)
 

@@ -625,7 +625,7 @@ function BatchPage({
       const [nextProject, nextJobs] = await Promise.all([getProject(projectId), listProjectJobs(projectId)]);
       setProject(nextProject);
       setJobs(nextJobs);
-      const nextJobId = routeJobId || nextProject.selected_job_id || nextJobs[0]?.id || null;
+      const nextJobId = routeJobId || nextProject.selected_job_id || null;
       setSelectedJobId(nextJobId);
       if (nextJobId) {
         await loadJobBundle(nextJobId, nextProject.selected_structure_id);
@@ -654,11 +654,12 @@ function BatchPage({
   }, [job?.status, loadJobBundle, selectedId, selectedJobId]);
 
   const selectedStructure = useMemo(() => {
-    if (!results?.structures.length) {
-      return project?.target_structure ?? null;
+    const localStructure = project ? findProjectStructure(project, project.selected_structure_id || "target") : null;
+    if (!selectedJobId || !results?.structures.length) {
+      return localStructure ?? project?.target_structure ?? null;
     }
-    return results.structures.find((item) => item.id === selectedId) ?? results.structures[0];
-  }, [project?.target_structure, results, selectedId]);
+    return results.structures.find((item) => item.id === selectedId) ?? results.structures[0] ?? localStructure;
+  }, [project, results, selectedId, selectedJobId]);
   const designRuns = project?.design_runs ?? [];
   const activeDesignRun = designRuns.some((run) => ["preparing", "queued", "running"].includes(run.status));
 
@@ -721,6 +722,29 @@ function BatchPage({
     }
   }
 
+  async function onSelectProjectStructure(id: string) {
+    if (!projectId) {
+      return;
+    }
+    setSelectedJobId(null);
+    setJob(null);
+    setResults(null);
+    setSelectedId(null);
+    setReportMarkdown("");
+    setFocusedRegion(null);
+    setProject((current) => (current ? { ...current, selected_job_id: null, selected_structure_id: id } : current));
+    try {
+      const nextProject = await updateProject(projectId, { selected_job_id: null, selected_structure_id: id });
+      setProject(nextProject);
+      await refreshProjects();
+      if (routeJobId) {
+        navigate(`/projects/${projectId}/workspace`);
+      }
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Structure selection failed.");
+    }
+  }
+
   const progress = job?.total_count ? job.completed_count / job.total_count : 0;
 
   return (
@@ -739,6 +763,11 @@ function BatchPage({
           }
         />
         <WorkspacePanel project={project} designRuns={designRuns} jobs={jobs} projectId={projectId} />
+        <ProjectStructureLibrary
+          structures={projectStructures(project)}
+          selectedId={!selectedJobId ? selectedStructure?.id ?? null : null}
+          onSelect={(id) => void onSelectProjectStructure(id)}
+        />
         <form className="batch-runner" onSubmit={onSubmit}>
           <div className="section-heading">
             <FileArchive size={18} />
@@ -909,7 +938,7 @@ function BatchPage({
           />
           {!results?.ranking.length && (
             <div className="empty-state compact">
-              Generated structures and uploaded candidates appear here after filtering.
+              Batch-ranked designs appear here after filtering. Generated structures are selectable above.
             </div>
           )}
         </section>
@@ -1058,6 +1087,40 @@ function WorkspaceFolder({ title, count, detail }: { title: string; count: numbe
         <p>{detail}</p>
       </div>
     </div>
+  );
+}
+
+function ProjectStructureLibrary({
+  structures,
+  selectedId,
+  onSelect,
+}: {
+  structures: StructureResult[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <section className="structure-library">
+      <div className="section-heading">
+        <Microscope size={18} />
+        <h2>Project structures</h2>
+      </div>
+      <div className="structure-library-list">
+        {structures.map((structure) => (
+          <button
+            key={structure.id}
+            type="button"
+            className={structure.id === selectedId ? "structure-library-item active" : "structure-library-item"}
+            onClick={() => onSelect(structure.id)}
+          >
+            <span>{structure.id === "target" ? "Target" : structure.profile.replace(/_/g, " ")}</span>
+            <strong>{structure.pdb_id}</strong>
+            <small>{structure.filename}</small>
+          </button>
+        ))}
+        {!structures.length && <div className="empty-state compact">No project structures yet.</div>}
+      </div>
+    </section>
   );
 }
 
