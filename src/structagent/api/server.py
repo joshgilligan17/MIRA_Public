@@ -612,8 +612,8 @@ def _plan_project_chat_tool_calls(
                     "content": (
                         "You are MIRA's project tool router. Return only a JSON object with a tool_calls array. "
                         "Use tools when the user asks to load/select a structure, inspect or analyze target "
-                        "structure properties, examine contacts/interfaces, start a batch screen from project "
-                        "structures, or invoke a configured design library. "
+                        "structure properties, identify hotspots/epitopes, examine contacts/interfaces, start a "
+                        "batch screen from project structures, or invoke a configured design library. "
                         "If the user asks for results, status, progress, or what was generated, return an empty "
                         "tool_calls array; the answer should use existing project context, not start new work. "
                         "Do not answer the biology question here. Do not invent PDB IDs or structure IDs."

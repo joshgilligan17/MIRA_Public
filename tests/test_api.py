@@ -317,6 +317,64 @@ def test_project_tool_router_does_not_start_generation_for_results_question():
     assert server._merge_tool_plan_with_fallback(filtered, fallback) == []
 
 
+def test_project_tool_router_falls_back_to_hotspot_analysis():
+    calls = project_tools.fallback_project_tool_calls("Identify hotspots on chain A for binder design.")
+
+    assert [call["tool"] for call in calls] == ["identify_hotspots"]
+    assert calls[0]["args"]["chain_id"] == "A"
+
+
+def test_project_chat_identifies_hotspots_when_router_abstains(tmp_path, monkeypatch):
+    class FakeProvider:
+        def chat(self, messages, model, **kwargs):
+            if "project tool router" in messages[0]["content"]:
+                assert '"identify_hotspots"' in messages[-1]["content"]
+                return ProviderResponse(content='{"tool_calls":[]}', input_tokens=20, output_tokens=4)
+            prompt = messages[-1]["content"]
+            assert '"tool": "identify_hotspots"' in prompt
+            assert '"hotspot_count"' in prompt
+            assert "mira://region/hotspots" in prompt
+            return ProviderResponse(
+                content="Hotspot analysis completed with clickable residue evidence.",
+                input_tokens=20,
+                output_tokens=16,
+            )
+
+    def fake_create_provider(provider_name, api_key, base_url=None, timeout=120.0, temperature=0.0):
+        return FakeProvider()
+
+    projects = ProjectStore(tmp_path / "projects")
+    monkeypatch.setattr(server, "PROJECTS", projects)
+    monkeypatch.setattr(server, "create_provider", fake_create_provider)
+    monkeypatch.setenv("MIRA_REPORT_PROVIDER", "openai")
+    monkeypatch.setenv("MIRA_REPORT_MODEL", "fake-model")
+    monkeypatch.setenv("MIRA_REPORT_API_KEY", "test-key")
+    client = TestClient(server.app)
+
+    project_id = client.post("/api/projects", json={"name": "Hotspot chat"}).json()["project"]["id"]
+    with open("tests/data/local/mini_complex.pdb", "rb") as handle:
+        upload = client.post(
+            f"/api/projects/{project_id}/target",
+            files={"file": ("target.pdb", handle, "chemical/x-pdb")},
+        )
+    assert upload.status_code == 200
+
+    chat = client.post(
+        f"/api/projects/{project_id}/chat",
+        json={"message": "Identify hotspots on chain A for binder design."},
+    )
+
+    assert chat.status_code == 200
+    body = chat.json()
+    event = body["messages"][-1]["tool_events"][0]
+    assert event["tool"] == "identify_hotspots"
+    assert event["success"] is True
+    assert event["raw"]["metrics"]["hotspot_count"] > 0
+    assert body["project"]["analyses"][0]["kind"] == "hotspot_analysis"
+    target = body["project"]["target_structure"]
+    assert target["features"]["hotspots"]
+
+
 def test_project_chat_exposes_registry_tools_for_selected_structure(tmp_path, monkeypatch):
     class FakeProvider:
         def chat(self, messages, model, **kwargs):

@@ -120,6 +120,38 @@ _PROJECT_NATIVE_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "identify_hotspots",
+        "description": (
+            "Identify likely binder-design hotspot residues on a selected target surface. "
+            "Use this when the user asks to find hotspots, epitopes, binding patches, or promising design regions."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "structure_id_or_pdb_id": {
+                    "type": "string",
+                    "description": "Project structure id, 'target', or PDB/file stem. Defaults to selected structure.",
+                },
+                "chain_id": {
+                    "type": "string",
+                    "description": "Optional chain to analyze. If omitted, MIRA scans up to four protein chains.",
+                },
+                "min_relative_sasa_percent": {
+                    "type": "number",
+                    "default": 45.0,
+                    "description": "Minimum relative SASA percent for hotspot candidates.",
+                },
+                "max_residues": {
+                    "type": "integer",
+                    "default": 12,
+                    "description": "Maximum number of hotspot residues to keep as clickable evidence.",
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "analyze_interface",
         "description": "Analyze a two-chain protein interface in a selected project structure.",
         "parameters": {
@@ -270,6 +302,12 @@ def message_may_need_project_tool(message: str) -> bool:
         "charge",
         "contact",
         "interface",
+        "hotspot",
+        "hotspots",
+        "epitope",
+        "epitopes",
+        "binding patch",
+        "binding site",
         "residue",
         "ramachandran",
         "batch",
@@ -350,18 +388,18 @@ def fallback_project_tool_calls(message: str) -> list[dict[str, Any]]:
         calls.append({"tool": "load_pdb_id", "args": {"pdb_id": pdb_id}, "purpose": "Detected explicit PDB ID."})
     if message_is_results_status_query(message):
         return calls[:1]
-    if any(word in lowered for word in ("analyze", "analyse", "flexible", "sasa", "charge", "ramachandran")):
+    direct_tool = _fallback_registry_tool_name(lowered)
+    if (
+        any(word in lowered for word in ("analyze", "analyse", "flexible", "sasa", "charge", "ramachandran"))
+        and not direct_tool
+    ):
         calls.append({"tool": "analyze_structure", "args": {}, "purpose": "Detected target-analysis request."})
     if any(word in lowered for word in ("batch", "rank", "screen")):
         calls.append({"tool": "start_batch_from_project", "args": {}, "purpose": "Detected batch-screening request."})
-    direct_tool = _fallback_registry_tool_name(lowered)
     if direct_tool:
         args = _fallback_registry_args(message, direct_tool)
         calls.append({"tool": direct_tool, "args": args, "purpose": f"Detected {direct_tool} request."})
-    if any(
-        word in lowered
-        for word in ("design", "generate", "rfdiffusion", "rf diffusion", "bindcraft", "proteinmpnn", "ligandmpnn")
-    ):
+    if _message_requests_generation(lowered):
         library = "proteinmpnn"
         if "bindcraft" in lowered:
             library = "bindcraft"
@@ -383,6 +421,7 @@ def fallback_project_tool_calls(message: str) -> list[dict[str, Any]]:
 
 def _fallback_registry_tool_name(lowered: str) -> str | None:
     phrase_map = [
+        (("hotspot", "hotspots", "epitope", "epitopes", "binding patch", "binding site"), "identify_hotspots"),
         (("secondary structure",), "get_secondary_structure"),
         (("conservation", "conserved"), "get_conservation_scores"),
         (("annotation", "functional"), "get_functional_annotations"),
@@ -406,6 +445,8 @@ def _fallback_registry_tool_name(lowered: str) -> str | None:
 def _fallback_registry_args(message: str, tool_name: str) -> dict[str, Any]:
     args: dict[str, Any] = {}
     chain = _extract_chain_id(message)
+    if chain and tool_name == "identify_hotspots":
+        args["chain_id"] = chain
     if chain and _tool_accepts_parameter(tool_name, "chain_id"):
         args["chain_id"] = chain
     if chain and tool_name == "analyze_interface_energies":
@@ -416,6 +457,34 @@ def _fallback_registry_args(message: str, tool_name: str) -> dict[str, Any]:
     if residue is not None and tool_name == "compute_perturbation_response":
         args["source_residue"] = residue
     return args
+
+
+def _message_requests_generation(lowered: str) -> bool:
+    explicit_library = any(
+        word in lowered
+        for word in ("generate", "rfdiffusion", "rf diffusion", "bindcraft", "proteinmpnn", "ligandmpnn")
+    )
+    explicit_creation = any(
+        phrase in lowered
+        for phrase in (
+            "design me",
+            "design a",
+            "design an",
+            "design new",
+            "design candidate",
+            "design candidates",
+            "design binder",
+            "design binders",
+            "redesign",
+            "make ",
+            "create ",
+        )
+    )
+    counted_design = re.search(
+        r"\bdesign\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b",
+        lowered,
+    )
+    return explicit_library or explicit_creation or bool(counted_design)
 
 
 def _tool_accepts_parameter(tool_name: str, parameter: str) -> bool:
@@ -453,6 +522,8 @@ def execute_project_chat_tool(
         return _analyze_structure(runtime, project, args)
     if tool_name == "analyze_contacts":
         return _analyze_contacts(runtime, project, args)
+    if tool_name == "identify_hotspots":
+        return _identify_hotspots(runtime, project, args)
     if tool_name == "analyze_interface":
         return _analyze_interface(runtime, project, args)
     if tool_name == "start_batch_from_project":
@@ -715,6 +786,144 @@ def _analyze_contacts(
             },
             error=result.error,
             tool_name="analyze_contacts",
+        ),
+    )
+
+
+def _identify_hotspots(
+    runtime: ProjectToolRuntime, project: ProjectRecord, args: dict[str, Any]
+) -> tuple[ProjectRecord, ToolResult]:
+    ref = _resolve_structure(runtime.project_store, project, args.get("structure_id_or_pdb_id"))
+    if not ref:
+        return _tool_error(project, "identify_hotspots", "No selected project structure is available.")
+
+    registry = _structure_registry()
+    chain_filter = str(args.get("chain_id") or "").strip() or None
+    min_relative_sasa = _bounded_float(args.get("min_relative_sasa_percent"), default=45.0, low=0.0, high=100.0)
+    max_residues = int(_bounded_float(args.get("max_residues"), default=12.0, low=1.0, high=50.0))
+
+    tool_events: list[dict[str, Any]] = []
+    metrics: dict[str, Any] = {}
+    features: dict[str, Any] = {}
+    summaries: list[str] = []
+
+    load_result = registry.call_tool("load_structure", pdb_path=str(ref["path"]))
+    _append_tool_event(tool_events, load_result, {"structure_id": ref["id"]})
+    if not load_result.success:
+        analysis = runtime.project_store.save_analysis(
+            project.id,
+            kind="hotspot_analysis",
+            query=str(args),
+            status="failed",
+            selected_structure_id=str(ref["id"]),
+            tool_events=tool_events,
+            summary=_short_text(load_result.data, 8000),
+        )
+        return (
+            project,
+            ToolResult(
+                success=False,
+                data=f"Could not load {ref['pdb_id']} for hotspot analysis.",
+                raw={"status": "failed", "analysis_id": analysis.id, "tool_events": tool_events},
+                error=load_result.error,
+                tool_name="identify_hotspots",
+            ),
+        )
+
+    chains = _chains_from_load_result(load_result, chain_filter)
+    hotspot_candidates: list[dict[str, Any]] = []
+
+    for chain_id in chains[:4]:
+        sasa_result = registry.call_tool("compute_sasa", pdb_path=str(ref["path"]), chain_id=chain_id)
+        _append_tool_event(tool_events, sasa_result, {"structure_id": ref["id"], "chain_id": chain_id})
+        _merge_tool_output(metrics, features, sasa_result, chain_id=chain_id)
+        if not sasa_result.success:
+            summaries.append(_short_text(sasa_result.data))
+            continue
+
+        bfactor_result = registry.call_tool("analyze_bfactors", pdb_path=str(ref["path"]), chain_id=chain_id)
+        _append_tool_event(tool_events, bfactor_result, {"structure_id": ref["id"], "chain_id": chain_id})
+        _merge_tool_output(metrics, features, bfactor_result, chain_id=chain_id)
+        summaries.append(_short_text(sasa_result.data))
+        summaries.append(_short_text(bfactor_result.data))
+
+        bfactor_by_residue = _bfactor_by_residue(bfactor_result)
+        for residue in _raw_residue_list(sasa_result):
+            residue_number = residue.get("residue_number")
+            if residue_number is None:
+                continue
+            relative_sasa = _as_float(residue.get("relative_sasa_percent"))
+            if relative_sasa is None or relative_sasa < min_relative_sasa:
+                continue
+            resname = str(residue.get("resname") or residue.get("residue_name") or "Residue")
+            bfactor = bfactor_by_residue.get(int(residue_number))
+            bfactor_class = str((bfactor or {}).get("classification") or "unknown")
+            chemistry = _hotspot_residue_class(resname)
+            score = _hotspot_candidate_score(relative_sasa, bfactor_class, chemistry)
+            hotspot_candidates.append(
+                {
+                    "kind": "hotspots",
+                    "chain": chain_id,
+                    "residue_number": int(residue_number),
+                    "residue_name": resname,
+                    "label": f"{resname}-{residue_number} chain {chain_id}",
+                    "score": score,
+                    "relative_sasa_percent": round(relative_sasa, 1),
+                    "absolute_sasa": residue.get("absolute_sasa"),
+                    "surface_classification": residue.get("classification"),
+                    "avg_bfactor": (bfactor or {}).get("avg_bfactor"),
+                    "bfactor_classification": bfactor_class,
+                    "chemistry": chemistry,
+                }
+            )
+
+    hotspot_candidates.sort(
+        key=lambda item: (float(item.get("score") or 0), float(item.get("relative_sasa_percent") or 0)), reverse=True
+    )
+    top_hotspots = hotspot_candidates[:max_residues]
+    features["hotspots"] = top_hotspots
+    metrics["hotspot_count"] = len(top_hotspots)
+    if top_hotspots:
+        metrics["top_hotspot_score"] = top_hotspots[0]["score"]
+        metrics["mean_hotspot_relative_sasa_percent"] = round(
+            sum(float(item.get("relative_sasa_percent") or 0) for item in top_hotspots) / len(top_hotspots),
+            2,
+        )
+
+    summary = _hotspot_summary(ref["pdb_id"], top_hotspots, min_relative_sasa)
+    if summaries:
+        summary = f"{summary}\n\nSupporting local analyses:\n" + "\n\n".join(part for part in summaries if part)[:5000]
+    success = bool(top_hotspots) or any(event.get("success") for event in tool_events)
+    analysis = runtime.project_store.save_analysis(
+        project.id,
+        kind="hotspot_analysis",
+        query=str(args),
+        status="completed" if success else "failed",
+        selected_structure_id=str(ref["id"]),
+        tool_events=tool_events,
+        metrics=metrics,
+        features=features,
+        summary=summary[:8000],
+    )
+    updated_project = runtime.project_store.set_selection(project.id, None, str(ref["id"]))
+    return (
+        updated_project,
+        ToolResult(
+            success=success,
+            data=summary,
+            raw={
+                "status": "completed" if success else "failed",
+                "analysis_id": analysis.id,
+                "pdb_id": ref["pdb_id"],
+                "selected_structure_id": ref["id"],
+                "selected_job_id": None,
+                "metrics": metrics,
+                "features": {"hotspots": top_hotspots},
+                "hotspots": top_hotspots,
+                "tool_events": tool_events,
+            },
+            error=None if success else "No hotspot candidates could be scored.",
+            tool_name="identify_hotspots",
         ),
     )
 
@@ -1267,6 +1476,107 @@ def _compact_raw(raw: object, max_items: int = 20) -> object:
                 compact[key] = value
         return compact
     return raw
+
+
+def _chains_from_load_result(load_result: ToolResult, chain_filter: str | None) -> list[str]:
+    if chain_filter:
+        return [chain_filter]
+    raw = load_result.raw if isinstance(load_result.raw, dict) else {}
+    chains = raw.get("chains") if isinstance(raw.get("chains"), list) else []
+    chain_ids = [str(chain.get("id")) for chain in chains if isinstance(chain, dict) and chain.get("id")]
+    return chain_ids or ["A"]
+
+
+def _raw_residue_list(result: ToolResult) -> list[dict[str, Any]]:
+    raw = result.raw if isinstance(result.raw, dict) else {}
+    residues = raw.get("residues")
+    return [item for item in residues if isinstance(item, dict)] if isinstance(residues, list) else []
+
+
+def _bfactor_by_residue(result: ToolResult) -> dict[int, dict[str, Any]]:
+    by_residue: dict[int, dict[str, Any]] = {}
+    for residue in _raw_residue_list(result):
+        residue_number = residue.get("residue_number")
+        if residue_number is None:
+            continue
+        try:
+            by_residue[int(residue_number)] = residue
+        except (TypeError, ValueError):
+            continue
+    return by_residue
+
+
+def _as_float(value: object) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _bounded_float(value: object, *, default: float, low: float, high: float) -> float:
+    parsed = _as_float(value)
+    if parsed is None:
+        parsed = default
+    return min(max(parsed, low), high)
+
+
+def _hotspot_residue_class(resname: str) -> str:
+    residue = resname.upper()
+    if residue in {"ALA", "VAL", "LEU", "ILE", "MET", "PHE", "TRP", "TYR", "PRO"}:
+        return "hydrophobic"
+    if residue in {"LYS", "ARG", "HIS", "ASP", "GLU"}:
+        return "charged"
+    if residue in {"SER", "THR", "ASN", "GLN", "CYS"}:
+        return "polar"
+    return "mixed"
+
+
+def _hotspot_candidate_score(relative_sasa: float, bfactor_class: str, chemistry: str) -> float:
+    flexibility_weight = {
+        "rigid": 0.72,
+        "ordered": 1.0,
+        "flexible": 0.88,
+        "highly_flexible": 0.52,
+        "unknown": 0.82,
+    }.get(bfactor_class, 0.82)
+    chemistry_weight = {
+        "hydrophobic": 1.0,
+        "charged": 0.92,
+        "polar": 0.82,
+        "mixed": 0.74,
+    }.get(chemistry, 0.74)
+    return round(relative_sasa * flexibility_weight * chemistry_weight, 2)
+
+
+def _hotspot_summary(pdb_id: str, hotspots: list[dict[str, Any]], min_relative_sasa: float) -> str:
+    if not hotspots:
+        return (
+            f"Hotspot analysis completed for `{pdb_id}`, but no surface residues exceeded "
+            f"the {min_relative_sasa:.0f}% relative SASA threshold."
+        )
+    lines = [
+        f"Identified `{len(hotspots)}` hotspot candidate residue(s) on `{pdb_id}`.",
+        (
+            "These are exposed residues scored from relative SASA, local B-factor class, "
+            "and residue chemistry; treat them as binder-design epitope candidates."
+        ),
+        "Top candidates:",
+    ]
+    for hotspot in hotspots[:8]:
+        lines.append(
+            "- "
+            f"{hotspot.get('residue_name')}-{hotspot.get('residue_number')} chain {hotspot.get('chain')}: "
+            f"score {_fmt_number(hotspot.get('score'))}, "
+            f"{_fmt_number(hotspot.get('relative_sasa_percent'))}% relative SASA, "
+            f"{hotspot.get('chemistry')} chemistry, "
+            f"{hotspot.get('bfactor_classification')} B-factor class."
+        )
+    return "\n".join(lines)
+
+
+def _fmt_number(value: object) -> str:
+    parsed = _as_float(value)
+    return f"{parsed:.1f}" if parsed is not None else "n/a"
 
 
 def _download_rcsb_cif(pdb_id: str) -> bytes:
