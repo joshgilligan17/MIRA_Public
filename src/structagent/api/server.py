@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import os
 import re
 import secrets
@@ -36,6 +37,8 @@ from structagent.projects import ProjectRecord, ProjectStore
 from structagent.providers import create_provider
 from structagent.profiles import list_analysis_profiles
 
+
+logger = logging.getLogger(__name__)
 
 JOB_ROOT = Path(os.environ.get("MIRA_JOB_ROOT", ".mira/jobs"))
 PROJECT_ROOT = Path(os.environ.get("MIRA_PROJECT_ROOT", str(JOB_ROOT.parent / "projects")))
@@ -794,7 +797,7 @@ def _generate_project_chat_response(
                     "content": (
                         f"User message: {user_message}\n\n"
                         "Project context JSON:\n"
-                        f"{json.dumps(context, indent=2, sort_keys=True)}"
+                        f"{json.dumps(context, indent=2, sort_keys=True, default=str)}"
                     ),
                 },
             ],
@@ -804,7 +807,8 @@ def _generate_project_chat_response(
         content = _clean_chat_response(response.content)
         return content or fallback
     except Exception as exc:
-        return f"{fallback}\n\n_Chat synthesis fell back to local context because the provider returned {type(exc).__name__}._"
+        logger.exception("Project chat synthesis failed for project %s", project.id)
+        return f"{fallback}\n\n_Chat synthesis temporarily fell back to local context._"
 
 
 def _project_chat_context(
@@ -1069,7 +1073,9 @@ def _resolve_chat_llm_config() -> tuple[str, str | None, str | None, str | None]
     return provider_name, model, base_url, api_key
 
 
-def _clean_chat_response(markdown: str) -> str:
+def _clean_chat_response(markdown: object) -> str:
+    if not isinstance(markdown, str):
+        markdown = "" if markdown is None else str(markdown)
     content = re.sub(r"<think>.*?</think>", "", markdown, flags=re.DOTALL | re.IGNORECASE).strip()
     if content.startswith("```"):
         content = content.strip("`")

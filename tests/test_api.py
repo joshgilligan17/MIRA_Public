@@ -324,6 +324,10 @@ def test_project_tool_router_falls_back_to_hotspot_analysis():
     assert calls[0]["args"]["chain_id"] == "A"
 
 
+def test_clean_chat_response_handles_non_string_content():
+    assert server._clean_chat_response(["Hotspot", "analysis"]) == "['Hotspot', 'analysis']"
+
+
 def test_project_chat_identifies_hotspots_when_router_abstains(tmp_path, monkeypatch):
     class FakeProvider:
         def chat(self, messages, model, **kwargs):

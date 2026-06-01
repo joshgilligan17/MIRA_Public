@@ -78,7 +78,7 @@ class OpenAIProvider(BaseProvider):
             request["tool_choice"] = kwargs.get("tool_choice", "auto")
         response = self._client.chat.completions.create(**request)
         return ProviderResponse(
-            content=response.choices[0].message.content or "",
+            content=_openai_message_content(response),
             input_tokens=response.usage.prompt_tokens if response.usage else 0,
             output_tokens=response.usage.completion_tokens if response.usage else 0,
             raw=response,
@@ -192,7 +192,7 @@ class MiniMaxProvider(BaseProvider):
             request["tool_choice"] = kwargs.get("tool_choice", "auto")
         response = self._client.chat.completions.create(**request)
         return ProviderResponse(
-            content=response.choices[0].message.content or "",
+            content=_openai_message_content(response),
             input_tokens=response.usage.prompt_tokens if response.usage else 0,
             output_tokens=response.usage.completion_tokens if response.usage else 0,
             raw=response,
@@ -248,12 +248,37 @@ class AzureProvider(BaseProvider):
             request["tool_choice"] = kwargs.get("tool_choice", "auto")
         response = self._client.chat.completions.create(**request)
         return ProviderResponse(
-            content=response.choices[0].message.content or "",
+            content=_openai_message_content(response),
             input_tokens=response.usage.prompt_tokens if response.usage else 0,
             output_tokens=response.usage.completion_tokens if response.usage else 0,
             raw=response,
             tool_calls=_openai_tool_calls(response),
         )
+
+
+def _openai_message_content(response: Any) -> str:
+    """Extract message content as plain text, including list-style content parts."""
+    try:
+        content = response.choices[0].message.content
+    except (AttributeError, IndexError, TypeError):
+        return ""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                value = item.get("text") or item.get("content")
+                if value is not None:
+                    parts.append(str(value))
+            elif hasattr(item, "text"):
+                parts.append(str(item.text))
+        return "\n".join(parts)
+    return str(content)
 
 
 def _openai_tool_calls(response: Any) -> list[dict[str, Any]]:
