@@ -192,7 +192,8 @@ _PROJECT_NATIVE_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "generate_design_candidates",
         "description": (
-            "Invoke a configured local generative design library such as BindCraft, RFdiffusion, or ProteinMPNN. "
+            "Invoke a configured generative design library such as FoldingDiff, BindCraft, RFdiffusion, "
+            "ProteinMPNN, or LigandMPNN. Use FoldingDiff for CPU de novo backbone/structure generation. "
             "If the library command is not configured, create a design setup record explaining what is missing."
         ),
         "parameters": {
@@ -200,15 +201,23 @@ _PROJECT_NATIVE_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "properties": {
                 "library": {
                     "type": "string",
-                    "enum": ["bindcraft", "rfdiffusion", "proteinmpnn", "ligandmpnn", "custom"],
+                    "enum": ["foldingdiff", "bindcraft", "rfdiffusion", "proteinmpnn", "ligandmpnn", "custom"],
                     "default": "custom",
                 },
                 "target_structure_id_or_pdb_id": {
                     "type": "string",
-                    "description": "Target structure id, 'target', or PDB/file stem. Defaults to selected/target.",
+                    "description": (
+                        "Target structure id, 'target', or PDB/file stem. Defaults to selected/target. "
+                        "Not required for unconditional FoldingDiff backbone generation."
+                    ),
                 },
                 "chain_id": {"type": "string", "description": "Optional target chain or receptor chain."},
                 "num_designs": {"type": "integer", "default": 8},
+                "length": {
+                    "type": "integer",
+                    "default": 80,
+                    "description": "Approximate residue length for unconditional FoldingDiff backbone generation.",
+                },
                 "temperature": {"type": "string", "default": "0.1"},
                 "seed": {"type": "integer", "default": 0},
                 "contigs": {
@@ -317,6 +326,10 @@ def message_may_need_project_tool(message: str) -> bool:
         "binder",
         "design",
         "generate",
+        "foldingdiff",
+        "folding diff",
+        "backbone",
+        "de novo",
         "rfdiffusion",
         "bindcraft",
         "proteinmpnn",
@@ -401,7 +414,9 @@ def fallback_project_tool_calls(message: str) -> list[dict[str, Any]]:
         calls.append({"tool": direct_tool, "args": args, "purpose": f"Detected {direct_tool} request."})
     if _message_requests_generation(lowered):
         library = "proteinmpnn"
-        if "bindcraft" in lowered:
+        if "foldingdiff" in lowered or "folding diff" in lowered or _message_requests_backbone_generation(lowered):
+            library = "foldingdiff"
+        elif "bindcraft" in lowered:
             library = "bindcraft"
         elif "rfdiffusion" in lowered or "rf diffusion" in lowered:
             library = "rfdiffusion"
@@ -409,10 +424,17 @@ def fallback_project_tool_calls(message: str) -> list[dict[str, Any]]:
             library = "ligandmpnn"
         elif "proteinmpnn" in lowered or "protein mpnn" in lowered:
             library = "proteinmpnn"
+        generation_args: dict[str, Any] = {"library": library, "design_prompt": message}
+        requested_count = _extract_requested_design_count(lowered)
+        requested_length = _extract_requested_design_length(lowered)
+        if requested_count:
+            generation_args["num_designs"] = requested_count
+        if requested_length and library == "foldingdiff":
+            generation_args["length"] = requested_length
         calls.append(
             {
                 "tool": "generate_design_candidates",
-                "args": {"library": library, "design_prompt": message},
+                "args": generation_args,
                 "purpose": "Detected candidate design request.",
             }
         )
@@ -462,7 +484,16 @@ def _fallback_registry_args(message: str, tool_name: str) -> dict[str, Any]:
 def _message_requests_generation(lowered: str) -> bool:
     explicit_library = any(
         word in lowered
-        for word in ("generate", "rfdiffusion", "rf diffusion", "bindcraft", "proteinmpnn", "ligandmpnn")
+        for word in (
+            "generate",
+            "foldingdiff",
+            "folding diff",
+            "rfdiffusion",
+            "rf diffusion",
+            "bindcraft",
+            "proteinmpnn",
+            "ligandmpnn",
+        )
     )
     explicit_creation = any(
         phrase in lowered
@@ -484,7 +515,72 @@ def _message_requests_generation(lowered: str) -> bool:
         r"\bdesign\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b",
         lowered,
     )
-    return explicit_library or explicit_creation or bool(counted_design)
+    return (
+        explicit_library or explicit_creation or bool(counted_design) or _message_requests_backbone_generation(lowered)
+    )
+
+
+def _message_requests_backbone_generation(lowered: str) -> bool:
+    return any(
+        phrase in lowered
+        for phrase in (
+            "backbone design",
+            "backbone designs",
+            "backbone generation",
+            "generate backbone",
+            "generate backbones",
+            "generate structure",
+            "generate structures",
+            "structure design",
+            "structure designs",
+            "de novo backbone",
+            "de novo structure",
+            "new backbone",
+            "new structure",
+        )
+    )
+
+
+def _extract_requested_design_count(lowered: str) -> int | None:
+    match = re.search(
+        r"\b(?:generate|make|create|design|redesign)\s+"
+        r"(?P<count>\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b",
+        lowered,
+    )
+    if not match:
+        return None
+    return _small_number(match.group("count"))
+
+
+def _extract_requested_design_length(lowered: str) -> int | None:
+    patterns = [
+        r"\b(?P<length>\d{2,4})\s*(?:aa|residue|residues|amino acid|amino acids)\b",
+        r"\blength\s+(?:of\s+)?(?P<length>\d{2,4})\b",
+        r"\b(?P<length>\d{2,4})\s*(?:mer|mers)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, lowered)
+        if match:
+            return int(match.group("length"))
+    return None
+
+
+def _small_number(value: str) -> int | None:
+    if value.isdigit():
+        return int(value)
+    words = {
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6,
+        "seven": 7,
+        "eight": 8,
+        "nine": 9,
+        "ten": 10,
+    }
+    return words.get(value)
 
 
 def _tool_accepts_parameter(tool_name: str, parameter: str) -> bool:
@@ -1188,21 +1284,25 @@ def _generate_design_candidates(
     runtime: ProjectToolRuntime, project: ProjectRecord, args: dict[str, Any]
 ) -> tuple[ProjectRecord, ToolResult]:
     library = str(args.get("library") or os.getenv("MIRA_DEFAULT_DESIGN_LIBRARY") or "proteinmpnn").strip().lower()
+    target_optional = library in {"foldingdiff"}
     target_ref = _resolve_structure(
         runtime.project_store,
         project,
         args.get("target_structure_id_or_pdb_id") or project.selected_structure_id or "target",
     )
-    if not target_ref:
+    if not target_ref and not target_optional:
         return _tool_error(project, "generate_design_candidates", "Upload or load a target structure before design.")
 
     prompt = str(args.get("design_prompt") or "Generate candidate binders for the selected target.")
-    num_designs = max(1, min(int(args.get("num_designs") or 8), int(os.getenv("MIRA_MAX_DESIGNS_PER_CHAT", "64"))))
+    max_designs = int(os.getenv("MIRA_MAX_DESIGNS_PER_CHAT", "64"))
+    if library == "foldingdiff":
+        max_designs = min(max_designs, int(os.getenv("MIRA_FOLDINGDIFF_MAX_DESIGNS", "8")))
+    num_designs = max(1, min(int(args.get("num_designs") or 8), max_designs))
     run = runtime.project_store.create_design_run(
         project.id,
         library=library,
         prompt=prompt,
-        target_structure_id=str(target_ref["id"]),
+        target_structure_id=str(target_ref["id"]) if target_ref else None,
         output_dir=None,
         command=None,
         num_designs=num_designs,
@@ -1215,7 +1315,7 @@ def _generate_design_candidates(
 
     design_request = DesignRequest(
         library=library,
-        target_path=Path(target_ref["path"]),
+        target_path=Path(target_ref["path"]) if target_ref else None,
         output_dir=output_dir,
         project_id=project.id,
         run_id=run.id,
@@ -1261,7 +1361,7 @@ def _generate_design_candidates(
                     "design_run_id": run.id,
                     "library": library,
                     "backend": prepared.parameters.get("backend"),
-                    "target_structure_id": target_ref["id"],
+                    "target_structure_id": target_ref["id"] if target_ref else None,
                     "num_designs": num_designs,
                 },
                 tool_name="generate_design_candidates",
@@ -1293,7 +1393,7 @@ def _generate_design_candidates(
                 "design_run_id": run.id,
                 "library": library,
                 "backend": prepared.parameters.get("backend"),
-                "target_structure_id": target_ref["id"],
+                "target_structure_id": target_ref["id"] if target_ref else None,
                 "output_dir": str(output_dir),
                 "num_designs": num_designs,
             },

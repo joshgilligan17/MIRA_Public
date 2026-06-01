@@ -324,6 +324,15 @@ def test_project_tool_router_falls_back_to_hotspot_analysis():
     assert calls[0]["args"]["chain_id"] == "A"
 
 
+def test_project_tool_router_falls_back_to_foldingdiff_backbone_generation():
+    calls = project_tools.fallback_project_tool_calls("Generate three de novo backbone structures around 55 residues.")
+
+    assert calls[-1]["tool"] == "generate_design_candidates"
+    assert calls[-1]["args"]["library"] == "foldingdiff"
+    assert calls[-1]["args"]["num_designs"] == 3
+    assert calls[-1]["args"]["length"] == 55
+
+
 def test_clean_chat_response_handles_non_string_content():
     assert server._clean_chat_response(["Hotspot", "analysis"]) == "['Hotspot', 'analysis']"
 
@@ -586,6 +595,96 @@ def test_project_chat_can_create_design_run_setup_record(tmp_path, monkeypatch):
     assert event["raw"]["status"] == "configuration_required"
     assert body["project"]["design_runs"][0]["library"] == "bindcraft"
     assert body["project"]["design_runs"][0]["status"] == "configuration_required"
+
+
+def test_project_chat_runs_configured_foldingdiff_structure_generation(tmp_path, monkeypatch):
+    fake_repo = tmp_path / "FoldingDiff"
+    fake_bin = fake_repo / "bin"
+    fake_bin.mkdir(parents=True)
+    (fake_bin / "sample.py").write_text(
+        """
+import argparse
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-l", nargs=2, type=int)
+parser.add_argument("-n", type=int)
+parser.add_argument("-b", type=int)
+parser.add_argument("--device", default="cpu")
+args, _ = parser.parse_known_args()
+
+out = Path.cwd() / "sampled_pdb"
+out.mkdir(parents=True, exist_ok=True)
+for index in range(args.n):
+    with (out / f"generated_{index}.pdb").open("w") as handle:
+        handle.write("ATOM      1  N   GLY A   1       0.000   0.000   0.000  1.00 10.00           N\\n")
+        handle.write("ATOM      2  CA  GLY A   1       1.458   0.000   0.000  1.00 10.00           C\\n")
+        handle.write("ATOM      3  C   GLY A   1       2.028   1.410   0.000  1.00 10.00           C\\n")
+        handle.write("TER\\nEND\\n")
+print(f"generated {args.n} FoldingDiff backbones at length {args.l[0]} on {args.device}")
+""".strip()
+    )
+
+    class FakeProvider:
+        def chat(self, messages, model, **kwargs):
+            if "project tool router" in messages[0]["content"]:
+                return ProviderResponse(
+                    content=(
+                        '{"tool_calls":[{"tool":"generate_design_candidates",'
+                        '"args":{"library":"foldingdiff","num_designs":3,"length":55,'
+                        '"design_prompt":"generate compact de novo backbones"},'
+                        '"purpose":"Run local backbone generation"}]}'
+                    ),
+                    input_tokens=20,
+                    output_tokens=22,
+                )
+            return ProviderResponse(
+                content="Started real FoldingDiff backbone generation.", input_tokens=20, output_tokens=22
+            )
+
+    def fake_create_provider(provider_name, api_key, base_url=None, timeout=120.0, temperature=0.0):
+        return FakeProvider()
+
+    projects = ProjectStore(tmp_path / "projects")
+    monkeypatch.setattr(server, "PROJECTS", projects)
+    monkeypatch.setattr(server, "create_provider", fake_create_provider)
+    monkeypatch.setenv("MIRA_FOLDINGDIFF_REPO", str(fake_repo))
+    monkeypatch.setenv("MIRA_FOLDINGDIFF_PYTHON", sys.executable)
+    monkeypatch.setenv("MIRA_FOLDINGDIFF_MAX_DESIGNS", "8")
+    monkeypatch.delenv("MIRA_FOLDINGDIFF_COMMAND", raising=False)
+    monkeypatch.delenv("MIRA_DESIGN_FOLDINGDIFF_COMMAND", raising=False)
+    monkeypatch.delenv("MIRA_DESIGN_COMMAND", raising=False)
+    monkeypatch.setenv("MIRA_REPORT_PROVIDER", "openai")
+    monkeypatch.setenv("MIRA_REPORT_MODEL", "fake-model")
+    monkeypatch.setenv("MIRA_REPORT_API_KEY", "test-key")
+    client = TestClient(server.app)
+
+    project_id = client.post("/api/projects", json={"name": "FoldingDiff chat"}).json()["project"]["id"]
+
+    chat = client.post(
+        f"/api/projects/{project_id}/chat",
+        json={"message": "Generate three 55 residue backbone structures with FoldingDiff."},
+    )
+
+    assert chat.status_code == 200
+    event = chat.json()["messages"][-1]["tool_events"][0]
+    assert event["tool"] == "generate_design_candidates"
+    assert event["raw"]["backend"] == "local"
+    assert event["raw"]["library"] == "foldingdiff"
+    assert event["raw"]["target_structure_id"] is None
+
+    project = client.get(f"/api/projects/{project_id}").json()["project"]
+    run = project["design_runs"][0]
+    assert run["library"] == "foldingdiff"
+    assert run["status"] == "completed"
+    assert run["target_structure_id"] is None
+    assert run["parameters"]["target_path"] is None
+    assert run["parameters"]["length"] == 55
+    assert run["parameters"]["device"] == "cpu"
+    assert len(run["generated_structure_ids"]) == 3
+    assert len(project["structures"]) == 3
+    messages = client.get(f"/api/projects/{project_id}/chat").json()["messages"]
+    assert any("Saved `3` generated structure file(s)" in message["content"] for message in messages)
 
 
 def test_project_chat_runs_configured_proteinmpnn_sequence_design(tmp_path, monkeypatch):

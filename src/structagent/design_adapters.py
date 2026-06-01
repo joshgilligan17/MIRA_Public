@@ -24,7 +24,7 @@ SEQUENCE_SUFFIXES = {".fa", ".fasta"}
 @dataclass
 class DesignRequest:
     library: str
-    target_path: Path
+    target_path: Path | None
     output_dir: Path
     project_id: str
     run_id: str
@@ -63,6 +63,8 @@ def prepare_design(request: DesignRequest) -> PreparedDesign:
         return _prepare_proteinmpnn(request)
     if library == "ligandmpnn":
         return _prepare_ligandmpnn(request)
+    if library == "foldingdiff":
+        return _prepare_foldingdiff(request)
     if library == "rfdiffusion":
         return _prepare_rfdiffusion(request)
     if library == "bindcraft":
@@ -119,6 +121,8 @@ def execute_design(parameters: dict[str, Any], output_dir: Path) -> DesignExecut
 
 
 def _prepare_proteinmpnn(request: DesignRequest) -> PreparedDesign:
+    if request.target_path is None:
+        return _configuration_required(request, "ProteinMPNN requires a target backbone structure.")
     repo = _env_path("MIRA_PROTEINMPNN_REPO") or _env_path("MIRA_PROTEINMPNN_PATH")
     script = repo / "protein_mpnn_run.py" if repo else None
     if not script or not script.exists():
@@ -174,6 +178,8 @@ def _prepare_proteinmpnn(request: DesignRequest) -> PreparedDesign:
 
 
 def _prepare_ligandmpnn(request: DesignRequest) -> PreparedDesign:
+    if request.target_path is None:
+        return _configuration_required(request, "LigandMPNN requires a target backbone structure.")
     repo = _env_path("MIRA_LIGANDMPNN_REPO") or _env_path("MIRA_LIGANDMPNN_PATH")
     script = repo / "run.py" if repo else None
     if not script or not script.exists():
@@ -213,7 +219,86 @@ def _prepare_ligandmpnn(request: DesignRequest) -> PreparedDesign:
     return _prepared(request, argv=argv, backend="local", model="ligandmpnn")
 
 
+def _prepare_foldingdiff(request: DesignRequest) -> PreparedDesign:
+    length = _bounded_int(
+        request.extra_args.get("length")
+        or request.extra_args.get("backbone_length")
+        or os.getenv("MIRA_FOLDINGDIFF_LENGTH"),
+        default=80,
+        low=int(os.getenv("MIRA_FOLDINGDIFF_MIN_LENGTH", "50")),
+        high=int(os.getenv("MIRA_FOLDINGDIFF_MAX_LENGTH", "128")),
+    )
+    max_designs = int(os.getenv("MIRA_FOLDINGDIFF_MAX_DESIGNS", "8"))
+    num_designs = max(1, min(request.num_designs, max_designs))
+    batch_size = _bounded_int(
+        request.extra_args.get("batch_size") or os.getenv("MIRA_FOLDINGDIFF_BATCH_SIZE"),
+        default=max(num_designs, 8),
+        low=1,
+        high=512,
+    )
+    device = str(request.extra_args.get("device") or os.getenv("MIRA_FOLDINGDIFF_DEVICE") or "cpu")
+
+    template = os.getenv("MIRA_FOLDINGDIFF_COMMAND") or os.getenv("MIRA_DESIGN_FOLDINGDIFF_COMMAND")
+    if template:
+        return _prepare_template_command(
+            request,
+            template,
+            backend="local",
+            model="foldingdiff",
+            length=length,
+            min_length=length,
+            max_length=length + 1,
+            batch_size=batch_size,
+            device=device,
+            num_designs=num_designs,
+        )
+
+    repo = _env_path("MIRA_FOLDINGDIFF_REPO") or _env_path("MIRA_FOLDINGDIFF_PATH")
+    script = repo / "bin" / "sample.py" if repo else None
+    if not script or not script.exists():
+        return _configuration_required(
+            request,
+            "FoldingDiff is not installed. Set MIRA_FOLDINGDIFF_REPO to the FoldingDiff checkout "
+            "and MIRA_FOLDINGDIFF_PYTHON to its Python environment.",
+        )
+
+    argv = [
+        os.getenv("MIRA_FOLDINGDIFF_PYTHON") or sys.executable,
+        str(script),
+        "-l",
+        str(length),
+        str(length + 1),
+        "-n",
+        str(num_designs),
+        "-b",
+        str(batch_size),
+        "--device",
+        device,
+    ]
+    if _truthy(request.extra_args.get("fullhistory")) or _truthy(os.getenv("MIRA_FOLDINGDIFF_FULL_HISTORY")):
+        argv.append("--fullhistory")
+    if _truthy(request.extra_args.get("testcomparison")):
+        argv.append("--testcomparison")
+
+    return _prepared(
+        request,
+        argv=argv,
+        backend="local",
+        model="foldingdiff",
+        target_path=None,
+        length=length,
+        min_length=length,
+        max_length=length + 1,
+        batch_size=batch_size,
+        device=device,
+        num_designs=num_designs,
+        output_kind="backbone_structure",
+    )
+
+
 def _prepare_rfdiffusion(request: DesignRequest) -> PreparedDesign:
+    if request.target_path is None:
+        return _configuration_required(request, "RFdiffusion requires a target/motif structure.", backend="gpu")
     template = os.getenv("MIRA_RFDIFFUSION_COMMAND") or os.getenv("MIRA_DESIGN_RFDIFFUSION_COMMAND")
     if template:
         return _prepare_template_command(request, template, backend="gpu", model="rfdiffusion")
@@ -245,6 +330,8 @@ def _prepare_rfdiffusion(request: DesignRequest) -> PreparedDesign:
 
 
 def _prepare_bindcraft(request: DesignRequest) -> PreparedDesign:
+    if request.target_path is None:
+        return _configuration_required(request, "BindCraft requires a target structure.", backend="gpu")
     template = os.getenv("MIRA_BINDCRAFT_COMMAND") or os.getenv("MIRA_DESIGN_BINDCRAFT_COMMAND")
     if template:
         return _prepare_template_command(request, template, backend="gpu", model="bindcraft")
@@ -283,17 +370,25 @@ def _prepare_custom(request: DesignRequest) -> PreparedDesign:
     return _prepare_template_command(request, template, backend="custom", model=request.library)
 
 
-def _prepare_template_command(request: DesignRequest, template: str, *, backend: str, model: str) -> PreparedDesign:
+def _prepare_template_command(
+    request: DesignRequest, template: str, *, backend: str, model: str, **extra_format: Any
+) -> PreparedDesign:
+    target_path = "" if request.target_path is None else str(request.target_path)
+    format_values = {
+        "project_id": shlex.quote(request.project_id),
+        "run_id": shlex.quote(request.run_id),
+        "target_path": shlex.quote(target_path),
+        "output_dir": shlex.quote(str(request.output_dir)),
+        "chain_id": shlex.quote(request.chain_id),
+        "num_designs": extra_format.get("num_designs", request.num_designs),
+        "prompt": shlex.quote(request.prompt),
+    }
+    format_values.update({key: shlex.quote(str(value)) for key, value in extra_format.items()})
     command = template.format(
-        project_id=shlex.quote(request.project_id),
-        run_id=shlex.quote(request.run_id),
-        target_path=shlex.quote(str(request.target_path)),
-        output_dir=shlex.quote(str(request.output_dir)),
-        chain_id=shlex.quote(request.chain_id),
-        num_designs=request.num_designs,
-        prompt=shlex.quote(request.prompt),
+        **format_values,
     )
     parameters = _base_parameters(request, backend=backend, model=model)
+    parameters.update({key: value for key, value in extra_format.items() if value is not None})
     parameters["shell_command"] = command
     return PreparedDesign(status="queued", command=command, parameters=parameters)
 
@@ -358,7 +453,7 @@ def _base_parameters(request: DesignRequest, *, backend: str, model: str) -> dic
     return {
         "backend": backend,
         "model": model,
-        "target_path": str(request.target_path),
+        "target_path": str(request.target_path) if request.target_path is not None else None,
         "output_dir": str(request.output_dir),
         "chain_id": request.chain_id,
         "num_designs": request.num_designs,
@@ -370,6 +465,8 @@ def _base_parameters(request: DesignRequest, *, backend: str, model: str) -> dic
 
 
 def _proteinmpnn_input_path(request: DesignRequest) -> tuple[Path, dict[str, Any]]:
+    if request.target_path is None:
+        raise ValueError("ProteinMPNN requires a target structure.")
     if request.target_path.suffix.lower() not in {".cif", ".mmcif"}:
         return request.target_path, {}
     prepared_path = request.output_dir / "proteinmpnn_input.pdb"
@@ -420,6 +517,14 @@ def _argv_without_flag(argv: list[str], flag: str) -> list[str]:
             continue
         filtered.append(item)
     return filtered
+
+
+def _bounded_int(value: object, *, default: int, low: int, high: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return min(max(parsed, low), high)
 
 
 def _collect_sequences(output_dir: Path) -> list[dict[str, Any]]:

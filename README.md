@@ -115,11 +115,16 @@ Open `http://127.0.0.1:5173`. Uploaded jobs are stored under `.mira/jobs/`.
 
 The historical `src/structagent/web/` UI remains archived/experimental. The supported dashboard entrypoint is `structagent.api.server:app` plus `webapp/`.
 
-Project chat can route bounded tool calls for structure loading, target analysis, contact/interface checks, batch screening from project structures, and real design-model execution. Local Apple Silicon development should start with ProteinMPNN or LigandMPNN sequence design. GPU-only backbones and binder pipelines such as RFdiffusion and BindCraft are queued through the same design-run interface but should run on a CUDA worker.
+Project chat can route bounded tool calls for structure loading, target analysis, contact/interface checks, batch screening from project structures, and real design-model execution. Local CPU development can run FoldingDiff for unconditional de novo backbone generation and ProteinMPNN or LigandMPNN for sequence design. Target-conditioned binder pipelines such as RFdiffusion and BindCraft are queued through the same design-run interface but should run on a CUDA worker.
 
 ```bash
-# Local sequence-design adapters.
+# Local CPU design adapters.
 MIRA_MODEL_DIR=/data/mira/models
+MIRA_FOLDINGDIFF_REPO=/path/to/FoldingDiff
+MIRA_FOLDINGDIFF_PYTHON=/path/to/foldingdiff-env/bin/python
+MIRA_FOLDINGDIFF_DEVICE=cpu
+MIRA_FOLDINGDIFF_MAX_DESIGNS=8
+MIRA_FOLDINGDIFF_MAX_LENGTH=128
 MIRA_PROTEINMPNN_REPO=/path/to/ProteinMPNN
 MIRA_PROTEINMPNN_PYTHON=/path/to/proteinmpnn-env/bin/python
 MIRA_LIGANDMPNN_REPO=/path/to/LigandMPNN
@@ -136,15 +141,18 @@ MIRA_DESIGN_COMMAND='custom-design --target {target_path} --out {output_dir}'
 MIRA_DESIGN_TIMEOUT_SECONDS=3600
 ```
 
-Supported custom-command placeholders are `{project_id}`, `{run_id}`, `{target_path}`, `{output_dir}`, `{chain_id}`, `{num_designs}`, and `{prompt}`. If a real backend is not configured, chat creates a `configuration_required` design run instead of pretending generation happened.
+Supported custom-command placeholders are `{project_id}`, `{run_id}`, `{target_path}`, `{output_dir}`, `{chain_id}`, `{num_designs}`, `{prompt}`, and backend-specific values such as `{length}`, `{min_length}`, `{max_length}`, `{batch_size}`, and `{device}` for FoldingDiff. If a real backend is not configured, chat creates a `configuration_required` design run instead of pretending generation happened.
 
-On the Docker deployment, install the CPU ProteinMPNN backend with:
+On the Docker deployment, install CPU backends with:
 
 ```bash
 cd /opt/mira
+scripts/install_foldingdiff_cpu.sh
 scripts/install_proteinmpnn_cpu.sh
 docker compose up -d
 ```
+
+FoldingDiff uses the public `microsoft/foldingdiff` sampler and writes generated PDB backbones into the project workspace. It is unconditional structure generation: use it to seed backbone ideas, then use ProteinMPNN/LigandMPNN and MIRA batch filtering to design and triage sequences around the generated structures.
 
 ### DigitalOcean Deployment
 
