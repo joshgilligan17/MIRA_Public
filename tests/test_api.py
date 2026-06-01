@@ -611,9 +611,11 @@ parser.add_argument("-l", nargs=2, type=int)
 parser.add_argument("-n", type=int)
 parser.add_argument("-b", type=int)
 parser.add_argument("--device", default="cpu")
+parser.add_argument("--outdir", default=".")
+parser.add_argument("--nopsea", action="store_true")
 args, _ = parser.parse_known_args()
 
-out = Path.cwd() / "sampled_pdb"
+out = Path(args.outdir) / "sampled_pdb"
 out.mkdir(parents=True, exist_ok=True)
 for index in range(args.n):
     with (out / f"generated_{index}.pdb").open("w") as handle:

@@ -274,7 +274,11 @@ def _prepare_foldingdiff(request: DesignRequest) -> PreparedDesign:
         str(batch_size),
         "--device",
         device,
+        "--outdir",
+        str(request.output_dir),
     ]
+    if not _truthy(request.extra_args.get("run_psea")) and not _truthy(os.getenv("MIRA_FOLDINGDIFF_RUN_PSEA")):
+        argv.append("--nopsea")
     if _truthy(request.extra_args.get("fullhistory")) or _truthy(os.getenv("MIRA_FOLDINGDIFF_FULL_HISTORY")):
         argv.append("--fullhistory")
     if _truthy(request.extra_args.get("testcomparison")):

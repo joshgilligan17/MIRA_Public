@@ -31,6 +31,19 @@ pip install numpy pandas scipy scikit-learn requests transformers huggingface_hu
 pip install -e FoldingDiff
 python - <<'PY'
 from pathlib import Path
+
+path = Path('/data/mira/models/FoldingDiff/bin/train.py')
+text = path.read_text()
+old = 'assert torch.cuda.is_available(), "Requires CUDA to train"'
+new = (
+    'if not torch.cuda.is_available() and Path(sys.argv[0]).name != "sample.py":\n'
+    '    raise AssertionError("Requires CUDA to train")'
+)
+if old in text:
+    path.write_text(text.replace(old, new))
+PY
+python - <<'PY'
+from pathlib import Path
 root = Path('/data/mira/models/FoldingDiff')
 script = root / 'bin' / 'sample.py'
 if not script.exists():
