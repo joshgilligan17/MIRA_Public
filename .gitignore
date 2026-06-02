@@ -28,6 +28,7 @@ test_binders_small/
 .results.md.swp
 results.md
 trajectories/
+eval-results/
 *_relaxed.pdb
 *_renum.pdb
 *_cleaned.pdb

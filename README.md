@@ -180,6 +180,17 @@ mira --display verbose "Analyze 1UBQ"
 mira --display normal "Analyze 1UBQ"
 ```
 
+### CLI Reasoning Eval
+
+For a quick submission-ready eval of the CLI agent's planning/tool-choice behavior:
+
+```bash
+uv run --extra dev python scripts/eval_cli_reasoning.py --provider minimax
+```
+
+The report is written to `eval-results/cli_reasoning_eval.json`. See
+`docs/cli-reasoning-evals.md` for the scoring rubric and cases.
+
 ## Architecture
 
 MIRA employs a **planning-first ReAct loop**:

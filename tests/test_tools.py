@@ -158,6 +158,13 @@ class TestComputeSasa:
             assert "classification" in r
             assert r["classification"] in ("buried", "partial", "exposed")
 
+    def test_sasa_accepts_json_list_range(self, registry):
+        """compute_sasa accepts JSON-native residue ranges from model plans."""
+        result = registry.call_tool("compute_sasa", pdb_path=LOCAL_PDB_PATH, chain_id="A", residue_range=[1, 5])
+
+        assert result.success is True
+        assert len(result.raw["residues"]) == 5
+
     def test_sasa_bad_chain(self, registry):
         """compute_sasa returns success=False for nonexistent chain."""
         result = registry.call_tool("compute_sasa", pdb_path=LOCAL_PDB_PATH, chain_id="Z")

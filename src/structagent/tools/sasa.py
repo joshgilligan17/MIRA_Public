@@ -42,18 +42,38 @@ def classify(relative_percent: float) -> str:
         return "exposed"
 
 
-def parse_residue_range(residue_range: str, chain_residues: list) -> list:
+def parse_residue_range(residue_range: str | int | list | tuple, chain_residues: list) -> list:
     """Parse residue_range string into list of residues.
 
     Supports:
     - 'start-end': range from start to end (inclusive)
     - comma-separated list: '1,3,5' or '1, 3, 5'
+    - JSON-native model outputs such as [1, 50] or [1, 3, 5]
     - empty/None: all residues
     """
     if not residue_range:
         return chain_residues
 
     import re
+
+    if isinstance(residue_range, int):
+        return [r for r in chain_residues if r.seqid.num == residue_range]
+
+    if isinstance(residue_range, (list, tuple)):
+        numeric_values = []
+        for value in residue_range:
+            if isinstance(value, int):
+                numeric_values.append(value)
+                continue
+            if isinstance(value, str):
+                match = re.match(r"^(\d+)", value.strip())
+                if match:
+                    numeric_values.append(int(match.group(1)))
+        if len(numeric_values) == 2 and len(residue_range) == 2:
+            start, end = numeric_values
+            return [r for r in chain_residues if start <= r.seqid.num <= end]
+        selected_nums = set(numeric_values)
+        return [r for r in chain_residues if r.seqid.num in selected_nums]
 
     residue_range = residue_range.strip()
 
