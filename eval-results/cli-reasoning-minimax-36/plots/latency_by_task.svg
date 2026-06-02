@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<style>text{font-family:Inter,Arial,sans-serif;fill:#17233f} .muted{fill:#5e6d86} .axis{stroke:#b9c7d6;stroke-width:1} .grid{stroke:#dbe6f0;stroke-width:1}</style>
+<text x="600.0" y="42.0" font-size="28" text-anchor="middle">MIRA CLI Planning Latency</text>
+<text x="600.0" y="70.0" font-size="14" text-anchor="middle" class="muted">Each dot is one planning task</text>
+<line class="grid" x1="110" y1="530.0" x2="1140" y2="530.0"/>
+<text x="96.0" y="535.0" font-size="13" text-anchor="end" class="muted">0.00s</text>
+<line class="grid" x1="110" y1="442.0" x2="1140" y2="442.0"/>
+<text x="96.0" y="447.0" font-size="13" text-anchor="end" class="muted">4.57s</text>
+<line class="grid" x1="110" y1="354.0" x2="1140" y2="354.0"/>
+<text x="96.0" y="359.0" font-size="13" text-anchor="end" class="muted">9.13s</text>
+<line class="grid" x1="110" y1="266.0" x2="1140" y2="266.0"/>
+<text x="96.0" y="271.0" font-size="13" text-anchor="end" class="muted">13.70s</text>
+<line class="grid" x1="110" y1="178.0" x2="1140" y2="178.0"/>
+<text x="96.0" y="183.0" font-size="13" text-anchor="end" class="muted">18.26s</text>
+<line class="grid" x1="110" y1="90.0" x2="1140" y2="90.0"/>
+<text x="96.0" y="95.0" font-size="13" text-anchor="end" class="muted">22.83s</text>
+<circle cx="110.0" cy="315.6" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="139.4" cy="234.4" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="168.9" cy="463.0" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="198.3" cy="482.6" r="5" fill="#d94f70" opacity="0.82"/>
+<circle cx="227.7" cy="320.8" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="257.1" cy="113.4" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="286.6" cy="324.8" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="316.0" cy="328.6" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="345.4" cy="382.0" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="374.9" cy="316.8" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="404.3" cy="308.7" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="433.7" cy="348.6" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="463.1" cy="320.8" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="492.6" cy="251.2" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="522.0" cy="435.7" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="551.4" cy="430.9" r="5" fill="#d94f70" opacity="0.82"/>
+<circle cx="580.9" cy="275.8" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="610.3" cy="239.9" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="639.7" cy="316.8" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="669.1" cy="316.8" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="698.6" cy="356.5" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="728.0" cy="356.1" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="757.4" cy="275.3" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="786.9" cy="206.3" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="816.3" cy="366.2" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="845.7" cy="417.3" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="875.1" cy="90.0" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="904.6" cy="336.5" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="934.0" cy="274.2" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="963.4" cy="291.6" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="992.9" cy="463.5" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="1022.3" cy="375.2" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="1051.7" cy="277.3" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="1081.1" cy="398.7" r="5" fill="#d94f70" opacity="0.82"/>
+<circle cx="1110.6" cy="265.5" r="5" fill="#2474bc" opacity="0.82"/>
+<circle cx="1140.0" cy="212.2" r="5" fill="#2474bc" opacity="0.82"/>
+<line class="axis" x1="110" y1="530" x2="1140" y2="530"/>
+<text x="600.0" y="585.0" font-size="15" text-anchor="middle" class="muted">Task index</text>
+</svg>

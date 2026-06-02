@@ -1,0 +1,77 @@
+{
+  "by_category": {
+    "active_site": {
+      "mean_latency_seconds": 13.762041187286377,
+      "n": 10,
+      "pass_rate": 1.0,
+      "schema_valid_rate": 1.0,
+      "tool_f1": 0.8581542176988097,
+      "tool_precision": 0.8099999999999999,
+      "tool_recall": 0.925
+    },
+    "allostery": {
+      "mean_latency_seconds": 14.185996890068054,
+      "n": 8,
+      "pass_rate": 0.875,
+      "schema_valid_rate": 1.0,
+      "tool_f1": 0.7841339554754189,
+      "tool_precision": 0.7447916666666666,
+      "tool_recall": 0.84375
+    },
+    "design": {
+      "mean_latency_seconds": 9.368511080741882,
+      "n": 2,
+      "pass_rate": 1.0,
+      "schema_valid_rate": 1.0,
+      "tool_f1": 0.7788697788697788,
+      "tool_precision": 0.7023809523809523,
+      "tool_recall": 0.875
+    },
+    "homology": {
+      "mean_latency_seconds": 9.727832794189453,
+      "n": 4,
+      "pass_rate": 1.0,
+      "schema_valid_rate": 1.0,
+      "tool_f1": 0.819327731092437,
+      "tool_precision": 0.9166666666666666,
+      "tool_recall": 0.75
+    },
+    "interface": {
+      "mean_latency_seconds": 5.224271178245544,
+      "n": 8,
+      "pass_rate": 0.75,
+      "schema_valid_rate": 0.875,
+      "tool_f1": 0.7842741935483871,
+      "tool_precision": 0.8708333333333333,
+      "tool_recall": 0.71875
+    },
+    "stability": {
+      "mean_latency_seconds": 10.802547335624695,
+      "n": 4,
+      "pass_rate": 1.0,
+      "schema_valid_rate": 1.0,
+      "tool_f1": 0.9045454545454545,
+      "tool_precision": 0.8666666666666667,
+      "tool_recall": 0.95
+    }
+  },
+  "mean_latency_seconds": 10.93780830833647,
+  "n_passed": 33,
+  "n_tasks": 36,
+  "pass_rate": 0.9166666666666666,
+  "run_config": {
+    "benchmark": "benchmark_candidates.jsonl",
+    "created_at": "2026-06-02T03:58:11",
+    "limit": 36,
+    "mode": "live",
+    "model": "MiniMax-M2.7",
+    "probe_chains": false,
+    "provider": "minimax",
+    "tasks_per_record": 2,
+    "threshold": 0.75
+  },
+  "schema_valid_rate": 0.9722222222222222,
+  "tool_f1": 0.8217233241519353,
+  "tool_precision": 0.82119708994709,
+  "tool_recall": 0.8416666666666667
+}

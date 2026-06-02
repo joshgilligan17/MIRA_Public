@@ -1,0 +1,64 @@
+{
+  "output": "output/mira-demo.mp4",
+  "target_duration_seconds": 180,
+  "resolution": [1920, 1080],
+  "fps": 30,
+  "slides": [
+    {
+      "id": "01_title",
+      "duration": 14,
+      "title": "MIRA",
+      "subtitle": "Molecular Intelligence and Reasoning Agent",
+      "body": ["Protein structure reasoning", "Design triage", "Evidence-backed synthesis"]
+    },
+    {
+      "id": "02_problem",
+      "duration": 22,
+      "title": "Why Build MIRA?",
+      "subtitle": "The bottleneck is not just generation",
+      "body": ["Many candidate structures", "Manual filtering and interpretation", "Disconnected scripts, viewers, and reports"]
+    },
+    {
+      "id": "03_workspace",
+      "duration": 26,
+      "title": "One Project Workspace",
+      "subtitle": "Targets, chats, batches, designs, reports",
+      "body": ["Upload local PDB/CIF/mmCIF files", "Chat about structure context", "Inspect evidence in the 3D viewer", "Download generated structures and sequences"]
+    },
+    {
+      "id": "04_demo_flow",
+      "duration": 30,
+      "title": "Demo Flow",
+      "subtitle": "Target analysis to candidate triage",
+      "body": ["Create or open a project", "Upload a target structure", "Ask the agent for residue-level analysis", "Run or review batch filtering", "Select candidates and inspect regions"]
+    },
+    {
+      "id": "05_architecture",
+      "duration": 28,
+      "title": "Application Architecture",
+      "subtitle": "React + FastAPI + tool registry + MiniMax",
+      "body": ["React workspace frontend", "FastAPI backend on DigitalOcean", "Server-side project and job stores", "Planning-first MiraAgent", "Deterministic structural biology tools"]
+    },
+    {
+      "id": "06_eval",
+      "duration": 22,
+      "title": "CLI Reasoning Eval",
+      "subtitle": "Transparent agent sanity check",
+      "body": ["36 live MiniMax planning tasks", "91.7% pass rate", "84.2% mean tool recall", "97.2% schema-valid plans"]
+    },
+    {
+      "id": "07_impact",
+      "duration": 20,
+      "title": "Use Cases",
+      "subtitle": "Early design triage and structural learning",
+      "body": ["Rank de novo binders", "Inspect top candidates", "Explain structural evidence", "Prioritize expensive follow-up"]
+    },
+    {
+      "id": "08_next",
+      "duration": 18,
+      "title": "What Comes Next",
+      "subtitle": "More autonomous design loops",
+      "body": ["GPU-backed RFdiffusion or BindCraft", "Cloudflare inference", "Stronger scientific benchmarks", "Generate, filter, explain, iterate"]
+    }
+  ]
+}

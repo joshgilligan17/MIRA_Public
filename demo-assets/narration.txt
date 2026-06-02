@@ -1,0 +1,17 @@
+MIRA is a molecular intelligence and reasoning agent for protein structure analysis and early design triage.
+
+I built it because protein design workflows are becoming high throughput, but the reasoning layer is still manual. A model can generate many candidate structures, but deciding which ones are worth follow-up means checking interfaces, solvent exposure, B-factors, contacts, residue-level evidence, and then writing a coherent report. That process is slow, repetitive, and easy to make inconsistent.
+
+MIRA turns that fragmented workflow into one project workspace. A user can create a project, upload a local PDB, CIF, or mmCIF file, chat about the target structure, inspect residue evidence in a 3D viewer, run batch filtering over candidate designs, and download generated structures, sequences, and reports.
+
+For this class project, I treated MIRA as an application-track system rather than a new foundation model. The frontend is a clean React workspace with projects, chat, a workspace tab, and a structure inspector. The backend is FastAPI, deployed on a DigitalOcean droplet. Project state, uploaded structures, generated candidates, batch jobs, and reports persist on the server.
+
+The agent layer uses a planning-first loop. It creates a plan from the user's query, validates that plan against the registered tool schemas and structure context, executes deterministic structural biology tools through a registry, and then uses MiniMax to synthesize the result. This means the model is not simply hallucinating a protein explanation. It is grounded in tool outputs such as SASA, B-factors, Ramachandran geometry, contacts, interface metrics, and batch rankings.
+
+In the product demo, the important experience is moving from chat to structure evidence to candidate filtering without leaving the project. When a report references a residue or region, the viewer can highlight that region. When a design or sequence run completes, the workspace becomes a folder of generated outputs that can be inspected or downloaded.
+
+I also added a CLI reasoning eval. It checks that the CLI commands work, then runs thirty six live MiniMax planning tasks across active sites, interfaces, stability, allostery, homology, and design. The score measures whether the agent chooses expected tools, avoids irrelevant tools, uses valid tool argument schemas, and responds within a reasonable planning latency. The current MiniMax eval reached a ninety one point seven percent pass rate, with eighty four point two percent mean tool recall and ninety seven point two percent schema valid plans.
+
+The main use case is early-stage protein design triage. A researcher could point MIRA at a folder of de novo binders, rank them, inspect the top candidates, and understand the structural evidence behind the ranking before spending GPU time or wet-lab resources.
+
+Next, I would add GPU-backed design workers for RFdiffusion or BindCraft, cheaper Cloudflare inference for synthesis, stronger scientific benchmarks, and more autonomous loops where MIRA proposes, generates, filters, and explains new protein designs.

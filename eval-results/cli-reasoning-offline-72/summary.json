@@ -1,0 +1,77 @@
+{
+  "by_category": {
+    "active_site": {
+      "mean_latency_seconds": 4.172325134277344e-06,
+      "n": 16,
+      "pass_rate": 1.0,
+      "schema_valid_rate": 1.0,
+      "tool_f1": 1.0,
+      "tool_precision": 1.0,
+      "tool_recall": 1.0
+    },
+    "allostery": {
+      "mean_latency_seconds": 3.1969764015891333e-06,
+      "n": 22,
+      "pass_rate": 1.0,
+      "schema_valid_rate": 1.0,
+      "tool_f1": 1.0,
+      "tool_precision": 1.0,
+      "tool_recall": 1.0
+    },
+    "design": {
+      "mean_latency_seconds": 3.6954879760742188e-06,
+      "n": 2,
+      "pass_rate": 1.0,
+      "schema_valid_rate": 1.0,
+      "tool_f1": 1.0,
+      "tool_precision": 1.0,
+      "tool_recall": 1.0
+    },
+    "homology": {
+      "mean_latency_seconds": 3.993511199951172e-06,
+      "n": 4,
+      "pass_rate": 1.0,
+      "schema_valid_rate": 1.0,
+      "tool_f1": 1.0,
+      "tool_precision": 1.0,
+      "tool_recall": 1.0
+    },
+    "interface": {
+      "mean_latency_seconds": 3.516674041748047e-06,
+      "n": 24,
+      "pass_rate": 1.0,
+      "schema_valid_rate": 1.0,
+      "tool_f1": 1.0,
+      "tool_precision": 1.0,
+      "tool_recall": 1.0
+    },
+    "stability": {
+      "mean_latency_seconds": 5.304813385009766e-06,
+      "n": 4,
+      "pass_rate": 1.0,
+      "schema_valid_rate": 1.0,
+      "tool_f1": 1.0,
+      "tool_precision": 1.0,
+      "tool_recall": 1.0
+    }
+  },
+  "mean_latency_seconds": 3.6954879760742188e-06,
+  "n_passed": 72,
+  "n_tasks": 72,
+  "pass_rate": 1.0,
+  "run_config": {
+    "benchmark": "benchmark_candidates.jsonl",
+    "created_at": "2026-06-02T03:51:29",
+    "limit": 72,
+    "mode": "offline",
+    "model": "offline-heuristic",
+    "probe_chains": false,
+    "provider": null,
+    "tasks_per_record": 2,
+    "threshold": 0.75
+  },
+  "schema_valid_rate": 1.0,
+  "tool_f1": 1.0,
+  "tool_precision": 1.0,
+  "tool_recall": 1.0
+}

@@ -1,0 +1,103 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body {
+    margin: 0;
+    width: 1920px;
+    height: 1080px;
+    overflow: hidden;
+    background: #f4f8fc;
+    color: #172033;
+    font-family: Inter, Arial, Helvetica, sans-serif;
+  }
+  .slide {
+    position: relative;
+    width: 1920px;
+    height: 1080px;
+    padding: 105px 118px;
+    box-sizing: border-box;
+    background:
+      linear-gradient(0deg, rgba(255,255,255,0.62), rgba(255,255,255,0.62)),
+      repeating-linear-gradient(90deg, rgba(31,111,191,0.075) 0, rgba(31,111,191,0.075) 2px, transparent 2px, transparent 132px),
+      #eef3f8;
+  }
+  .rail {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 22px;
+    background: #1f6fbf;
+  }
+  .mark {
+    color: #1f6fbf;
+    font-family: Menlo, Consolas, monospace;
+    font-size: 32px;
+    letter-spacing: 0;
+    white-space: pre;
+    line-height: 1.0;
+    opacity: 0.92;
+  }
+  h1 {
+    margin: 34px 0 14px;
+    color: #1f6fbf;
+    font-size: 104px;
+    line-height: 1.0;
+    letter-spacing: 0;
+  }
+  h2 {
+    margin: 0 0 62px;
+    max-width: 1380px;
+    color: #172033;
+    font-size: 40px;
+    font-weight: 500;
+    letter-spacing: 0;
+  }
+  ul {
+    margin: 0;
+    padding-left: 42px;
+    max-width: 1220px;
+    color: #31445c;
+    font-size: 38px;
+    line-height: 1.35;
+  }
+  li {
+    margin: 17px 0;
+  }
+  .footer {
+    position: absolute;
+    left: 124px;
+    bottom: 70px;
+    color: #607086;
+    font-size: 24px;
+    font-weight: 700;
+  }
+  .accent {
+    position: absolute;
+    right: 115px;
+    bottom: 80px;
+    width: 360px;
+    height: 180px;
+    border: 2px dashed rgba(31, 111, 191, 0.38);
+    border-radius: 10px;
+    transform: skewY(-8deg);
+  }
+</style>
+</head>
+<body>
+  <main class="slide">
+    <div class="rail"></div>
+    <div class="mark">.--..--.   MIRA</div>
+    <h1>What Comes Next</h1>
+    <h2>More autonomous design loops</h2>
+    <ul><li>GPU-backed RFdiffusion or BindCraft</li>
+<li>Cloudflare inference</li>
+<li>Stronger scientific benchmarks</li>
+<li>Generate, filter, explain, iterate</li></ul>
+    <div class="accent"></div>
+    <div class="footer">MIRA | CS 153 Demo</div>
+  </main>
+</body>
+</html>

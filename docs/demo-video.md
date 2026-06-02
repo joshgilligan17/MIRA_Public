@@ -1,6 +1,6 @@
 # MIRA Demo Video Guide
 
-This guide is designed for a 4 to 5 minute class-project demo video. It maps
+This guide is designed for a 3 minute class-project demo video. It maps
 directly to the required questions and gives a practical recording path through
 the hosted product.
 
@@ -27,16 +27,16 @@ Recommended title:
 
 ## Video Shape
 
-Target length: 4:00 to 5:00.
+Target length: 3:00.
 
 | Time | Segment | Main Question |
 | --- | --- | --- |
-| 0:00-0:35 | Problem and motivation | Q1 |
-| 0:35-1:10 | What MIRA is | Q1/Q2 |
-| 1:10-2:55 | Product demo | Q2 |
-| 2:55-3:35 | Architecture and eval | Q2 |
-| 3:35-4:15 | Use cases and impact | Q3 |
-| 4:15-4:50 | What comes next | Q4 |
+| 0:00-0:25 | Problem and motivation | Q1 |
+| 0:25-0:55 | What MIRA is | Q1/Q2 |
+| 0:55-1:55 | Product demo | Q2 |
+| 1:55-2:25 | Architecture and eval | Q2 |
+| 2:25-2:45 | Use cases and impact | Q3 |
+| 2:45-3:00 | What comes next | Q4 |
 
 ## Recording Prep
 
@@ -45,19 +45,19 @@ Before recording:
 1. Open the hosted app: `http://143.198.231.169`
 2. Hard refresh the browser.
 3. Keep one local file ready for upload:
-   - `/tmp/mira-public-fix/tests/data/batch/1ubq.pdb`
-   - `/tmp/mira-public-fix/tests/data/local/mini_complex.pdb`
+   - `tests/data/batch/1ubq.pdb`
+   - `tests/data/local/mini_complex.pdb`
 4. Keep the CLI eval report command ready:
 
 ```bash
-cd /tmp/mira-public-fix
-uv run --extra dev python scripts/eval_cli_reasoning.py --provider minimax --skip-live
+cd <repo-root>
+venv/bin/python scripts/run_cli_reasoning_eval.py --mode live --provider minimax --limit 36
 ```
 
 5. For the live eval result, use the already-generated report if needed:
 
 ```bash
-cat eval-results/cli_reasoning_minimax.json
+cat eval-results/cli-reasoning-minimax-36/summary.json
 ```
 
 If model calls are slow during recording, do not wait silently. Say:
@@ -218,23 +218,24 @@ Visual:
 - Show terminal output from:
 
 ```bash
-uv run --extra dev python scripts/eval_cli_reasoning.py --provider minimax
+venv/bin/python scripts/run_cli_reasoning_eval.py --mode live --provider minimax --limit 36
 ```
 
 - Or show the JSON summary:
 
 ```text
 cli_smoke_passed: true
-eval_cases: 4
-eval_passed: 4
-mean_score: 1.0
+eval_cases: 36
+pass_rate: 91.7%
+mean_tool_recall: 84.2%
+schema_valid_plans: 97.2%
 min_score: 1.0
 ```
 
 Narration:
 
-> To avoid only showing a polished demo, I also added a small CLI reasoning
-> eval. It checks that the CLI commands parse, then runs live reasoning cases
+> To avoid only showing a polished demo, I also added a CLI reasoning
+> eval. It checks that the CLI commands parse, then runs live planning cases
 > over local structure fixtures. The score measures whether the agent selected
 > the required tools, used local file paths, executed the tools successfully,
 > and grounded the final answer in expected structural evidence. This is not a
@@ -303,11 +304,11 @@ Use this if you want a simple narration without thinking about section cuts.
 > ranks structures by metrics like stability, buried surface area, interface
 > residue count, and B-factors, and produces a comparative synthesis report.
 >
-> I also added a small CLI reasoning eval. It checks CLI parsing and runs live
-> reasoning cases over local fixtures. It scores whether the agent chooses the
-> right tools, uses local file paths, executes successfully, and grounds its
-> final answer in expected evidence. This gives me a transparent sanity check
-> that the agent is doing more than producing a nice-looking answer.
+> I also added a CLI reasoning eval. It checks CLI parsing and runs live
+> MiniMax planning cases across active sites, interfaces, stability, allostery,
+> homology, and design. It scores expected tool coverage, precision,
+> schema-valid arguments, and planning latency. This gives me a transparent
+> sanity check that the agent is doing more than producing a nice-looking answer.
 >
 > The use case is early protein design triage. A researcher could generate many
 > candidate binders, load them into MIRA, quickly identify promising structures,
