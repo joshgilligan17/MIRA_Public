@@ -310,6 +310,66 @@ def list_project_design_runs(project_id: str) -> dict[str, object]:
     return {"design_runs": [run.to_dict() for run in PROJECTS.list_design_runs(project_id)]}
 
 
+@app.get("/api/projects/{project_id}/design-runs/{run_id}/sequences.fasta")
+def download_design_run_sequences(project_id: str, run_id: str) -> PlainTextResponse:
+    run = _get_design_run_or_404(project_id, run_id)
+    fasta = _design_run_fasta(run)
+    if not fasta:
+        raise HTTPException(status_code=404, detail="This design run has no generated sequences.")
+    filename = f"{run.library}_{run.id}_sequences.fasta"
+    return PlainTextResponse(
+        fasta,
+        media_type="text/x-fasta",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/projects/{project_id}/design-runs/{run_id}/archive.zip")
+def download_design_run_archive(project_id: str, run_id: str) -> StreamingResponse:
+    project = _get_project_or_404(project_id)
+    run = _get_design_run_or_404(project_id, run_id)
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        manifest = run.to_dict()
+        archive.writestr("manifest.json", json.dumps(manifest, indent=2, sort_keys=True))
+        if run.logs:
+            archive.writestr("logs.txt", run.logs)
+        fasta = _design_run_fasta(run)
+        if fasta:
+            archive.writestr("sequences.fasta", fasta)
+
+        for structure_id in run.generated_structure_ids or []:
+            structure = next((item for item in project.structures if item.id == structure_id), None)
+            path = PROJECTS.structure_path(project, structure_id)
+            if (
+                not structure
+                or not path
+                or not path.exists()
+                or not _is_under(path, PROJECTS.structure_dir(project_id))
+            ):
+                continue
+            archive.write(path, f"structures/{_safe_zip_name(structure.original_name or path.name)}")
+
+        output_dir = Path(run.output_dir or "")
+        for artifact in run.artifacts or []:
+            artifact_path = Path(str(artifact.get("path") or ""))
+            if (
+                artifact_path.is_file()
+                and output_dir
+                and _is_under(artifact_path, output_dir)
+                and artifact_path.suffix.lower() not in {".pdb", ".cif", ".mmcif", ".fa", ".fasta"}
+            ):
+                archive.write(artifact_path, f"artifacts/{_safe_zip_name(artifact_path.name)}")
+
+    buffer.seek(0)
+    filename = f"{run.library}_{run.id}_outputs.zip"
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.post("/api/jobs")
 async def create_job(
     background_tasks: BackgroundTasks,
@@ -462,6 +522,37 @@ def _project_response(project: ProjectRecord) -> dict[str, object]:
     data["design_runs"] = [run.to_dict() for run in PROJECTS.list_design_runs(project.id)[:20]]
     data["job_count"] = len(project.job_ids)
     return data
+
+
+def _get_design_run_or_404(project_id: str, run_id: str):
+    try:
+        return next(run for run in PROJECTS.list_design_runs(project_id) if run.id == run_id)
+    except StopIteration as exc:
+        raise HTTPException(status_code=404, detail="Design run not found.") from exc
+
+
+def _design_run_fasta(run) -> str:
+    lines: list[str] = []
+    for index, item in enumerate(run.generated_sequences or [], start=1):
+        if not isinstance(item, dict):
+            continue
+        sequence = re.sub(r"\s+", "", str(item.get("sequence") or "")).upper()
+        if not sequence:
+            continue
+        sequence_id = _safe_fasta_token(str(item.get("id") or f"sequence_{index}"))
+        header = str(item.get("header") or sequence_id).replace("\n", " ").strip()
+        lines.append(f">{sequence_id} {header}".strip())
+        lines.extend(sequence[offset : offset + 80] for offset in range(0, len(sequence), 80))
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def _safe_fasta_token(value: str) -> str:
+    token = re.sub(r"[^A-Za-z0-9_.:-]+", "_", value.strip())
+    return token[:80] or "sequence"
+
+
+def _safe_zip_name(value: str) -> str:
+    return Path(value.replace("\\", "/")).name or "artifact"
 
 
 def _viewer_structure(

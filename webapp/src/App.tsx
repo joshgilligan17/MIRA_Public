@@ -1059,6 +1059,18 @@ function WorkspacePanel({
                 ))}
               </div>
             )}
+            <div className="design-run-actions">
+              <a href={`${API_BASE}/api/projects/${projectId}/design-runs/${run.id}/archive.zip`}>
+                <ArrowDownToLine size={15} />
+                <span>Outputs</span>
+              </a>
+              {!!run.generated_sequences?.length && (
+                <a href={`${API_BASE}/api/projects/${projectId}/design-runs/${run.id}/sequences.fasta`}>
+                  <ArrowDownToLine size={15} />
+                  <span>FASTA</span>
+                </a>
+              )}
+            </div>
             {run.error && <p>{run.error}</p>}
           </div>
         ))}
@@ -1107,16 +1119,19 @@ function ProjectStructureLibrary({
       </div>
       <div className="structure-library-list">
         {structures.map((structure) => (
-          <button
+          <div
             key={structure.id}
-            type="button"
             className={structure.id === selectedId ? "structure-library-item active" : "structure-library-item"}
-            onClick={() => onSelect(structure.id)}
           >
-            <span>{structure.id === "target" ? "Target" : structure.profile.replace(/_/g, " ")}</span>
-            <strong>{structure.pdb_id}</strong>
-            <small>{structure.filename}</small>
-          </button>
+            <button type="button" className="structure-select-button" onClick={() => onSelect(structure.id)}>
+              <span>{structure.id === "target" ? "Target" : structure.profile.replace(/_/g, " ")}</span>
+              <strong>{structure.pdb_id}</strong>
+              <small>{structure.filename}</small>
+            </button>
+            <a className="structure-download" href={`${API_BASE}${structure.structure_url}`} title="Download structure">
+              <ArrowDownToLine size={16} />
+            </a>
+          </div>
         ))}
         {!structures.length && <div className="empty-state compact">No project structures yet.</div>}
       </div>

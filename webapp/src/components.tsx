@@ -167,7 +167,13 @@ export function StructureViewer({
       }
       setViewerState("loading");
       const response = await fetch(`${API_BASE}${renderedStructure.structure_url}`, { credentials: "include" });
+      if (!response.ok) {
+        throw new Error(`viewer fetch ${response.status}`);
+      }
       const text = await response.text();
+      if (!text.trim()) {
+        throw new Error("empty structure file");
+      }
       if (cancelled || !viewerRef.current) {
         return;
       }
@@ -179,6 +185,15 @@ export function StructureViewer({
         : "pdb";
       viewer.addModel(text, format);
       viewer.setStyle({}, { cartoon: { color: "spectrum", opacity: 0.82 } });
+      if (format === "pdb" && isBackboneOnlyPdb(text)) {
+        viewer.addStyle(
+          {},
+          {
+            stick: { colorscheme: "Jmol", radius: 0.14, opacity: 0.82 },
+          },
+        );
+        viewer.addStyle({ atom: "CA" }, { sphere: { color: "#176db2", radius: 0.34, opacity: 0.9 } });
+      }
       for (const residue of residuesForEvidence(renderedStructure, activeEvidence)) {
         const selector = selectorForResidue(residue);
         if (!selector) {
@@ -199,15 +214,27 @@ export function StructureViewer({
       } else {
         viewer.zoomTo();
       }
+      if (typeof viewer.resize === "function") {
+        viewer.resize();
+      }
       viewer.render();
       setViewerState("ready");
     }
 
-    renderStructure().catch(() => setViewerState("viewer error"));
+    renderStructure().catch((error) => {
+      setViewerState(error instanceof Error ? error.message : "viewer error");
+    });
     return () => {
       cancelled = true;
     };
-  }, [structure?.id, activeEvidence, focusedRegion?.evidenceKey, focusedRegion?.chain, focusedRegion?.residueNumber]);
+  }, [
+    structure?.id,
+    structure?.structure_url,
+    activeEvidence,
+    focusedRegion?.evidenceKey,
+    focusedRegion?.chain,
+    focusedRegion?.residueNumber,
+  ]);
 
   return (
     <div className="viewer-frame">
@@ -215,6 +242,25 @@ export function StructureViewer({
       {viewerState !== "ready" && <div className="viewer-state">{viewerState}</div>}
     </div>
   );
+}
+
+function isBackboneOnlyPdb(text: string) {
+  const atomNames = new Set<string>();
+  let atomCount = 0;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.startsWith("ATOM") && !line.startsWith("HETATM")) {
+      continue;
+    }
+    atomCount += 1;
+    atomNames.add(line.slice(12, 16).trim().toUpperCase());
+    if (atomNames.size > 5 || atomCount > 800) {
+      break;
+    }
+  }
+  if (!atomCount) {
+    throw new Error("no atoms found");
+  }
+  return [...atomNames].every((name) => ["N", "CA", "C", "O"].includes(name));
 }
 
 export function EvidenceControls({

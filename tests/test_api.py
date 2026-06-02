@@ -1,6 +1,8 @@
 """Tests for the local FastAPI batch API."""
 
 import sys
+import zipfile
+from io import BytesIO
 
 from fastapi.testclient import TestClient
 
@@ -689,6 +691,12 @@ print(f"generated {args.n} FoldingDiff backbones at length {args.l[0]} on {args.
     generated = client.get(f"/api/projects/{project_id}/structures/{run['generated_structure_ids'][0]}")
     assert generated.status_code == 200
     assert b"ATOM" in generated.content
+    archive = client.get(f"/api/projects/{project_id}/design-runs/{run['id']}/archive.zip")
+    assert archive.status_code == 200
+    with zipfile.ZipFile(BytesIO(archive.content)) as zip_file:
+        names = zip_file.namelist()
+        assert "manifest.json" in names
+        assert any(name.startswith("structures/") and name.endswith(".pdb") for name in names)
     messages = client.get(f"/api/projects/{project_id}/chat").json()["messages"]
     assert any("Saved `3` generated structure file(s)" in message["content"] for message in messages)
 
@@ -780,6 +788,14 @@ print(f"generated {args.num_seq_per_target} ProteinMPNN sequences")
     assert run["parameters"]["model"] == "proteinmpnn"
     assert len(run["generated_sequences"]) == 5
     assert run["generated_sequences"][0]["sequence"] == "ACDEFGHIKLMNPQRSTVWY"
+    fasta = client.get(f"/api/projects/{project_id}/design-runs/{run['id']}/sequences.fasta")
+    assert fasta.status_code == 200
+    assert ">design_0" in fasta.text
+    assert "ACDEFGHIKLMNPQRSTVWY" in fasta.text
+    archive = client.get(f"/api/projects/{project_id}/design-runs/{run['id']}/archive.zip")
+    assert archive.status_code == 200
+    with zipfile.ZipFile(BytesIO(archive.content)) as zip_file:
+        assert "sequences.fasta" in zip_file.namelist()
     messages = client.get(f"/api/projects/{project_id}/chat").json()["messages"]
     assert any("completed with `proteinmpnn`" in message["content"] for message in messages)
 
