@@ -200,15 +200,13 @@ export function StructureViewer({
           continue;
         }
         viewer.addStyle(selector, {
-          stick: { color: colorForEvidence(activeEvidence), radius: 0.24 },
-          sphere: { color: colorForEvidence(activeEvidence), radius: 0.72 },
+          stick: { color: colorForEvidence(activeEvidence), radius: 0.22, opacity: 0.96 },
         });
       }
       const focusedSelector = focusedRegion ? selectorForFocusedRegion(focusedRegion) : null;
       if (focusedSelector) {
         viewer.addStyle(focusedSelector, {
-          stick: { color: "#f8c94b", radius: 0.34 },
-          sphere: { color: "#f8c94b", radius: 1.05 },
+          stick: { color: "#f8c94b", radius: 0.3, opacity: 1 },
         });
         viewer.zoomTo(focusedSelector);
       } else {

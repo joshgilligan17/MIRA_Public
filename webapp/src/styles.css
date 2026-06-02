@@ -59,6 +59,11 @@ a {
   gap: 18px;
 }
 
+.app-shell.sidebar-collapsed {
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 12px;
+}
+
 .sidebar,
 .center-column,
 .inspector-column {
@@ -80,8 +85,36 @@ a {
   overflow: hidden;
 }
 
+.sidebar.collapsed {
+  grid-template-rows: auto;
+  justify-items: center;
+  padding: 10px 6px;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.sidebar.collapsed .sidebar-header {
+  justify-content: center;
+  width: 100%;
+}
+
+.sidebar-toggle {
+  flex: 0 0 auto;
+}
+
 .sidebar-brand {
   margin-bottom: 14px;
+  min-width: 0;
+}
+
+.sidebar-header .sidebar-brand {
+  margin-bottom: 0;
 }
 
 .logo-mark {
@@ -1418,6 +1451,10 @@ tbody tr:last-child td {
   .app-shell {
     grid-template-columns: 1fr;
     padding: 12px;
+  }
+
+  .app-shell.sidebar-collapsed {
+    grid-template-columns: 1fr;
   }
 
   .sidebar {

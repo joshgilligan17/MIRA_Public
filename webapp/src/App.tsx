@@ -8,6 +8,8 @@ import {
   Loader2,
   MessageSquare,
   Microscope,
+  PanelLeftClose,
+  PanelLeftOpen,
   Play,
   RefreshCw,
   SlidersHorizontal,
@@ -80,6 +82,13 @@ function MiraWorkspace() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [apiOnline, setApiOnline] = useState<boolean | null>(null);
   const [synthesisStatus, setSynthesisStatus] = useState<SynthesisStatus | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem("mira:sidebarCollapsed") === "true";
+    } catch {
+      return false;
+    }
+  });
 
   const refreshProjects = useCallback(async () => {
     const nextProjects = await listProjects();
@@ -102,9 +111,23 @@ function MiraWorkspace() {
     refreshProjects().catch(() => setProjects([]));
   }, [refreshProjects]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("mira:sidebarCollapsed", sidebarCollapsed ? "true" : "false");
+    } catch {
+      // Ignore storage failures; the toggle should still work for the session.
+    }
+  }, [sidebarCollapsed]);
+
   return (
-    <div className="app-shell">
-      <Sidebar projects={projects} apiOnline={apiOnline} synthesisStatus={synthesisStatus} />
+    <div className={sidebarCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
+      <Sidebar
+        projects={projects}
+        apiOnline={apiOnline}
+        synthesisStatus={synthesisStatus}
+        collapsed={sidebarCollapsed}
+        onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
+      />
       <main className="workspace-main">
         <Routes>
           <Route path="/" element={<Navigate to="/projects" replace />} />
@@ -137,10 +160,14 @@ function Sidebar({
   projects,
   apiOnline,
   synthesisStatus,
+  collapsed,
+  onToggleCollapsed,
 }: {
   projects: Project[];
   apiOnline: boolean | null;
   synthesisStatus: SynthesisStatus | null;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
 }) {
   const location = useLocation();
   const activeProjectId = location.pathname.match(/\/projects\/([^/]+)/)?.[1] ?? null;
@@ -148,55 +175,72 @@ function Sidebar({
   const workspaceActive = Boolean(activeProject && /\/projects\/[^/]+\/(workspace|batch|jobs)/.test(location.pathname));
 
   return (
-    <aside className="sidebar">
-      <div className="sidebar-brand">
-        <LogoMark compact />
-      </div>
-      <StatusPill online={apiOnline} synthesis={synthesisStatus} />
-      <nav className="mode-nav">
-        <NavLink to="/projects" end className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}>
-          <Home size={18} />
-          <span>Home</span>
-        </NavLink>
-        {activeProject && (
-          <>
-            <div className="project-nav-heading">
-              <span>Project</span>
-              <strong>{activeProject.name}</strong>
-            </div>
-            <NavLink
-              to={`/projects/${activeProject.id}/chat`}
-              className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
-            >
-              <MessageSquare size={18} />
-              <span>Chat</span>
-            </NavLink>
-            <NavLink
-              to={`/projects/${activeProject.id}/workspace`}
-              className={() => (workspaceActive ? "nav-item active" : "nav-item")}
-            >
-              <FileArchive size={18} />
-              <span>Workspace</span>
-            </NavLink>
-          </>
+    <aside className={collapsed ? "sidebar collapsed" : "sidebar"}>
+      <div className="sidebar-header">
+        {!collapsed && (
+          <div className="sidebar-brand">
+            <LogoMark compact />
+          </div>
         )}
-      </nav>
-      <div className="sidebar-section">
-        <div className="sidebar-section-title">Folders</div>
-        <div className="project-switcher">
-          {projects.slice(0, 8).map((project) => (
-            <Link
-              key={project.id}
-              to={`/projects/${project.id}/chat`}
-              className={project.id === activeProjectId ? "project-link active" : "project-link"}
-            >
-              <span>{project.name}</span>
-              <small>{project.design_run_ids?.length ?? 0} generations</small>
-            </Link>
-          ))}
-          {!projects.length && <div className="sidebar-empty">No projects yet.</div>}
-        </div>
+        <button
+          className="icon-button sidebar-toggle"
+          type="button"
+          onClick={onToggleCollapsed}
+          title={collapsed ? "Show sidebar" : "Hide sidebar"}
+          aria-label={collapsed ? "Show sidebar" : "Hide sidebar"}
+        >
+          {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+        </button>
       </div>
+      {!collapsed && (
+        <>
+          <StatusPill online={apiOnline} synthesis={synthesisStatus} />
+          <nav className="mode-nav">
+            <NavLink to="/projects" end className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}>
+              <Home size={18} />
+              <span>Home</span>
+            </NavLink>
+            {activeProject && (
+              <>
+                <div className="project-nav-heading">
+                  <span>Project</span>
+                  <strong>{activeProject.name}</strong>
+                </div>
+                <NavLink
+                  to={`/projects/${activeProject.id}/chat`}
+                  className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
+                >
+                  <MessageSquare size={18} />
+                  <span>Chat</span>
+                </NavLink>
+                <NavLink
+                  to={`/projects/${activeProject.id}/workspace`}
+                  className={() => (workspaceActive ? "nav-item active" : "nav-item")}
+                >
+                  <FileArchive size={18} />
+                  <span>Workspace</span>
+                </NavLink>
+              </>
+            )}
+          </nav>
+          <div className="sidebar-section">
+            <div className="sidebar-section-title">Folders</div>
+            <div className="project-switcher">
+              {projects.slice(0, 8).map((project) => (
+                <Link
+                  key={project.id}
+                  to={`/projects/${project.id}/chat`}
+                  className={project.id === activeProjectId ? "project-link active" : "project-link"}
+                >
+                  <span>{project.name}</span>
+                  <small>{project.design_run_ids?.length ?? 0} generations</small>
+                </Link>
+              ))}
+              {!projects.length && <div className="sidebar-empty">No projects yet.</div>}
+            </div>
+          </div>
+        </>
+      )}
     </aside>
   );
 }
