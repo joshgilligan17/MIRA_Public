@@ -191,6 +191,12 @@ uv run --extra dev python scripts/eval_cli_reasoning.py --provider minimax
 The report is written to `eval-results/cli_reasoning_eval.json`. See
 `docs/cli-reasoning-evals.md` for the scoring rubric and cases.
 
+### Demo Video Guide
+
+For the class submission recording plan, see `docs/demo-video.md`. It includes a
+4-5 minute script, shot list, Q1-Q4 answer map, and backup plan for live model
+latency.
+
 ## Architecture
 
 MIRA employs a **planning-first ReAct loop**:
