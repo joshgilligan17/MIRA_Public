@@ -34,7 +34,6 @@ export const evidenceKinds = [
 export function LogoMark({ compact = false }: { compact?: boolean }) {
   return (
     <div className={compact ? "logo-mark compact" : "logo-mark"}>
-      <div className="terminal-line">&gt; MIRA --load model:</div>
       <pre aria-hidden="true">{".--..--.\n  \\\\  //\n   \\\\//\n   //\\\\\n  //  \\\\"}</pre>
       <div>
         <div className="brand-word">MIRA</div>
