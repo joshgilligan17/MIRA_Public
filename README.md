@@ -11,14 +11,13 @@ MIRA aims to be the 'Codex for Molecular Biology'. Empowering academics, student
 
 **Project goal:** MIRA is a prototype protein-structure reasoning workspace for target analysis, candidate design triage, and evidence-backed ranking of generated structures. The motivating bottleneck is that modern de novo protein design can create many candidate structures quickly, but filtering them still requires slow manual inspection across structure quality, solvent exposure, interfaces, residue contacts, dynamics, and biological interpretation.
 
-**What was built:** This repo contains a cleaned Python CLI agent, a local/hostable FastAPI + React workspace, project/job persistence, batch structure analysis over PDB/CIF/mmCIF files, 3D structure inspection support, report synthesis, design-model adapter scaffolding, demo-video assets, and CLI reasoning evals. The current submission emphasizes a reproducible application artifact rather than custom model training: the LLM plans and synthesizes, while deterministic registered tools collect structural evidence.
+**What was built:** This repo contains a cleaned Python CLI agent, a local/hostable FastAPI + React workspace, project/job persistence, batch structure analysis over PDB/CIF/mmCIF files, 3D structure inspection support, report synthesis, design-model adapter scaffolding, and CLI reasoning evals. The current submission emphasizes a reproducible application artifact rather than custom model training: the LLM plans and synthesizes, while deterministic registered tools collect structural evidence.
 
 **What to look at first:**
 - CLI batch path: `mira batch --folder ./pdbs "Analyze candidate binders"`
 - Web app backend: `uvicorn structagent.api.server:app --reload --port 8000`
 - Web app frontend: `cd webapp && npm run dev`
 - Eval output: `eval-results/cli-reasoning-minimax-36/`
-- Demo assets: `demo-assets/output/mira-demo.mp4`
 - Deployment notes: `docs/deploy-digitalocean.md`
 
 ## Assignment Rubric Notes
@@ -30,12 +29,12 @@ This section maps the project to the 15-point CS 153 Project Video + GitHub Subm
 | Problem & Insight | 3 | MIRA addresses a real structural-biology bottleneck: large sets of generated protein structures are hard to triage manually. The approach combines LLM planning, deterministic structure-analysis tools, batch ranking, and report synthesis so a single researcher can inspect more designs with clearer evidence. |
 | Execution & Technical Work | 5 | The project includes a functional CLI agent, batch analysis over local structure folders, a tool registry with 20+ tools, a FastAPI backend, a React workspace, project/job persistence, downloadable artifacts, CPU-oriented design adapter scaffolding, DigitalOcean deployment docs, and cleaned tests/fixtures. |
 | Evaluation & Evidence | 3 | The repo includes unit tests, CLI tests, offline evals, and a live MiniMax planning eval. The current live eval ran 36 tasks with 91.7% pass rate, 84.2% mean tool recall, 82.1% mean tool precision, and 97.2% schema-valid plans; the report also highlights limitations such as weaker interface planning. |
-| Communication & Presentation | 2 | The README explains setup, usage, architecture, evals, deployment, and project context. The demo assets include a 3-minute narrated MP4 package, and `docs/demo-video.md` contains a class-video guide. |
+| Communication & Presentation | 2 | The README explains setup, usage, architecture, evals, deployment, project context, reproducibility, and limitations for a reader outside the project. |
 | Process, Integrity & Disclosure | 2 | AI assistance, model/provider usage, borrowed dependencies, deployment choices, and limitations are disclosed below. Historical/experimental material is separated from the cleaned baseline where possible, and eval artifacts document progress and failure modes. |
 
 ### AI Usage And Disclosure
 
-AI tools were used heavily and intentionally, consistent with the course policy. ChatGPT/Codex assisted with planning, refactoring, frontend/backend implementation, debugging, test updates, README writing, eval harness generation, plot generation, and demo-video scripting. MiniMax is used as the current live LLM provider for planning and synthesis calls in the app and CLI evals. No new foundation model was trained for this submission; structure-analysis evidence comes from deterministic or established scientific tooling such as gemmi, FreeSASA, BioPython, ProDy where available, and optional PyRosetta integrations.
+AI tools were used heavily and intentionally, consistent with the course policy. ChatGPT/Codex assisted with planning, refactoring, frontend/backend implementation, debugging, test updates, README writing, eval harness generation, and plot generation. MiniMax is used as the current live LLM provider for planning and synthesis calls in the app and CLI evals. No new foundation model was trained for this submission; structure-analysis evidence comes from deterministic or established scientific tooling such as gemmi, FreeSASA, BioPython, ProDy where available, and optional PyRosetta integrations.
 
 ### Current Limitations
 
@@ -240,12 +239,6 @@ The current live MiniMax run is stored in
 `eval-results/cli-reasoning-minimax-36/`: 36 tasks, 91.7% pass rate, 84.2%
 mean tool recall, 82.1% mean tool precision, and 97.2% schema-valid plans. The
 SVG plots in that folder use white backgrounds for easy inclusion in slides.
-
-### Demo Video Guide
-
-For the class submission recording plan, see `docs/demo-video.md`. It includes a
-3-minute script, shot list, Q1-Q4 answer map, and backup plan for live model
-latency.
 
 ## Architecture
 

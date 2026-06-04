@@ -1,8 +1,0 @@
-file 'segments/01_title.mp4'
-file 'segments/02_problem.mp4'
-file 'segments/03_workspace.mp4'
-file 'segments/04_demo_flow.mp4'
-file 'segments/05_architecture.mp4'
-file 'segments/06_eval.mp4'
-file 'segments/07_impact.mp4'
-file 'segments/08_next.mp4'
