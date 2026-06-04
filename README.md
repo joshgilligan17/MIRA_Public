@@ -3,9 +3,9 @@
 
 A tool-augmented reasoning agent for biomolecular structure analysis with a planning-first execution loop and registry-based tool system. The cleaned baseline focuses on reliable `mira batch` runs over local folders of `.pdb`, `.cif`, and `.mmcif` files for structure filtering, ranking, and comparative analysis.
 
-## CS 153 Project Context
+MIRA aims to be the 'Codex for Molecular Biology'. Empowering academics, students and industry investigators to use structural biological reasoning to advance therapeutic development.
 
-**Course project:** CS 153, The One-Person Frontier Lab.
+## CS 153 Project Context
 
 **Project track:** Application/Product with Automation/Agent Systems and a domain-specific structural biology focus.
 
