@@ -1,9 +1,11 @@
 
 # MIRA - Molecular Intelligence and Reasoning Agent
 
-A tool-augmented reasoning agent for biomolecular structure analysis with a planning-first execution loop and registry-based tool system. The cleaned baseline focuses on reliable `mira batch` runs over local folders of `.pdb`, `.cif`, and `.mmcif` files for structure filtering, ranking, and comparative analysis.
+MIRA is the only structure first reasoning agent for biomolecular structures. Unlike modern DNA or Protein Language models, MIRA sees biology like a biologist, empowering researchers to reason over _de novo_ designs.
 
-MIRA aims to be the 'Codex for Molecular Biology'. Empowering academics, students and industry investigators to use structural biological reasoning to advance therapeutic development.
+MIRA aims to be the 'Codex for Molecular Biology' - academics, students and industry investigators can use structural biological reasoning to advance therapeutic development. MIRA is a a tool-augmented reasoning agent for biomolecular structure analysis with a planning-first execution loop and registry-based tool system. MIRA can be operated in the command line with a CLI tool, ready to be integrated into existing biomelcular structure workflows or through the GUI. The demo interface can be accessed [here](http://143.198.231.169/projects). 
+
+
 
 ## CS 153 Project Context
 
