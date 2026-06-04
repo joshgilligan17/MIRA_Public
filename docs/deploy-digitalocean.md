@@ -92,8 +92,6 @@ MIRA_DOMAIN=:80
 MIRA_DATA_DIR=/data/mira/jobs
 MIRA_PROJECT_DIR=/data/mira/projects
 MIRA_MODEL_DIR=/data/mira/models
-MIRA_BASIC_AUTH_USERNAME=mira
-MIRA_BASIC_AUTH_PASSWORD=use-a-long-random-password
 MIRA_REPORT_PROVIDER=minimax
 MIRA_REPORT_MODEL=MiniMax-M2.7
 MIRA_REPORT_BASE_URL=https://api.minimax.io/v1
@@ -124,7 +122,7 @@ Open:
 http://DROPLET_IP
 ```
 
-The browser should prompt for the Basic Auth username/password.
+The public class demo opens without a login prompt.
 
 ## 5. Add A Domain
 
@@ -157,7 +155,7 @@ docker image prune -f
 
 - Uploaded jobs persist under `/data/mira/jobs`; project folders, chat history, and target structures persist under `/data/mira/projects`.
 - The default upload cap is `MIRA_MAX_UPLOAD_MB=250`.
-- Keep Basic Auth enabled until Cloudflare Access is in front of the app.
+- The public class demo is open by default. For a private deployment, put Cloudflare Access in front of the app or set `MIRA_BASIC_AUTH_ENABLED=true` with `MIRA_BASIC_AUTH_USERNAME` and `MIRA_BASIC_AUTH_PASSWORD`.
 - This deployment runs background jobs inside the web process, which is appropriate for class-project testing. A queue/worker split can come later.
 - When Cloudflare Workers AI is approved, we can add a Cloudflare provider and switch synthesis without moving the backend.
 

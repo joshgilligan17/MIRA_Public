@@ -45,6 +45,12 @@ PROJECT_ROOT = Path(os.environ.get("MIRA_PROJECT_ROOT", str(JOB_ROOT.parent / "p
 MAX_UPLOAD_BYTES = int(float(os.environ.get("MIRA_MAX_UPLOAD_MB", "250")) * 1024 * 1024)
 BASIC_AUTH_USERNAME = os.environ.get("MIRA_BASIC_AUTH_USERNAME")
 BASIC_AUTH_PASSWORD = os.environ.get("MIRA_BASIC_AUTH_PASSWORD")
+BASIC_AUTH_ENABLED = os.environ.get("MIRA_BASIC_AUTH_ENABLED", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 STORE = JobStore(JOB_ROOT)
 PROJECTS = ProjectStore(PROJECT_ROOT)
 RUNNER = JobRunner(STORE)
@@ -86,8 +92,15 @@ class ProjectChatRequest(BaseModel):
 
 @app.middleware("http")
 async def optional_basic_auth(request: Request, call_next):
-    if not BASIC_AUTH_USERNAME or not BASIC_AUTH_PASSWORD or request.url.path == "/api/health":
+    if not BASIC_AUTH_ENABLED or request.url.path == "/api/health":
         return await call_next(request)
+
+    if not BASIC_AUTH_USERNAME or not BASIC_AUTH_PASSWORD:
+        logger.warning("MIRA_BASIC_AUTH_ENABLED is true but username/password are not configured")
+        return PlainTextResponse(
+            "Authentication is enabled but credentials are not configured",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
 
     authorization = request.headers.get("Authorization", "")
     if not _valid_basic_auth(authorization):

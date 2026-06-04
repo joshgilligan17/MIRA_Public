@@ -205,7 +205,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-See `docs/deploy-digitalocean.md` for the full Droplet setup, auth, DNS, and update flow.
+See `docs/deploy-digitalocean.md` for the full Droplet setup, DNS, and update flow.
 
 ### Display Modes
 
@@ -402,8 +402,6 @@ export OPENAI_API_KEY=your_key_here  # Alternative
 export MIRA_JOB_ROOT=.mira/jobs
 export MIRA_REPORT_PROVIDER=minimax
 export MIRA_REPORT_API_KEY=your_key_here
-export MIRA_BASIC_AUTH_USERNAME=mira
-export MIRA_BASIC_AUTH_PASSWORD=use-a-long-random-password
 ```
 
 ### CLI Options
