@@ -289,6 +289,14 @@ a {
   min-height: calc(100vh - 36px);
 }
 
+.chat-column {
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  align-content: stretch;
+  height: calc(100vh - 36px);
+  min-height: 0;
+  overflow: hidden;
+}
+
 .inspector-column {
   position: sticky;
   top: 18px;
@@ -574,9 +582,11 @@ textarea {
   display: grid;
   align-content: start;
   gap: 12px;
-  min-height: 420px;
-  max-height: calc(100vh - 252px);
-  overflow: auto;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
   padding-right: 4px;
 }
 
@@ -584,11 +594,11 @@ textarea {
   min-width: 0;
   max-width: 86%;
   padding: 13px 14px;
-  overflow: hidden;
   border: 1px solid #d9e4ef;
   border-radius: 8px;
   background: #ffffff;
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .chat-bubble.user {
@@ -1449,6 +1459,17 @@ tbody tr:last-child td {
   .inspector-column {
     position: static;
     max-height: none;
+  }
+
+  .chat-column {
+    height: auto;
+    min-height: calc(100vh - 36px);
+    overflow: visible;
+  }
+
+  .chat-messages {
+    min-height: 360px;
+    max-height: min(70vh, 640px);
   }
 }
 
