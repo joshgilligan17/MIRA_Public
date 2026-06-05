@@ -242,6 +242,10 @@ The current live MiniMax run is stored in
 mean tool recall, 82.1% mean tool precision, and 97.2% schema-valid plans. The
 SVG plots in that folder use white backgrounds for easy inclusion in slides.
 
+![CLI reasoning eval results](docs/assets/cli-reasoning-eval-results.png)
+
+_MiniMax live CLI planning eval across 36 benchmark tasks._
+
 ## Architecture
 
 MIRA employs a **planning-first ReAct loop**:
